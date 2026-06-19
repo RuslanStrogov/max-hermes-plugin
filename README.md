@@ -195,6 +195,12 @@ MIT License. См. [LICENSE](LICENSE).
 
 ---
 
+## 🔗 Связанные проекты
+
+| Проект | Описание |
+|--------|----------|
+| [MAX Hermes Bridge](https://github.com/RuslanStrogov/max-hermes) | Python-мост между MAX Bot API и Hermes Agent через CLI. Поддерживает webhook, Docker, systemd. |
+
 <div align="center">
 
   <sub>🎨 Designed by <a href="https://br-design.ru/">BR-DESIGN</a></sub>
