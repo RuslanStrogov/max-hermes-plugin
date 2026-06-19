@@ -1,0 +1,37 @@
+name: max-platform
+label: MAX
+kind: platform
+version: 1.0.0
+description: >
+  MAX Bot API gateway adapter for Hermes Agent.
+  Connects Hermes to the MAX messenger (max.ru) via Bot API webhooks.
+  Supports text messages, inline keyboards, typing indicators, and file uploads.
+author: Ruslan Strogov
+license: MIT
+homepage: https://github.com/RuslanStrogov/max-hermes-plugin
+requires_env:
+  - name: MAX_BOT_TOKEN
+    description: "Bot token from MAX partner platform (business.max.ru)"
+    prompt: "MAX Bot Token"
+    password: true
+  - name: MAX_WEBHOOK_URL
+    description: "Public URL for receiving webhooks (e.g. https://your-domain.com/webhook)"
+    prompt: "Webhook URL"
+    password: false
+  - name: MAX_WEBHOOK_SECRET
+    description: "Secret for webhook signature verification (optional)"
+    prompt: "Webhook Secret (optional)"
+    password: true
+optional_env:
+  - name: MAX_API_BASE_URL
+    description: "MAX API base URL (default: https://platform-api.max.ru)"
+    prompt: "MAX API Base URL"
+    password: false
+  - name: MAX_ALLOWED_USERS
+    description: "Comma-separated user IDs allowed to interact (empty = allow all)"
+    prompt: "Allowed User IDs (comma-separated, empty = all)"
+    password: false
+  - name: MAX_HOME_CHANNEL
+    description: "Chat ID for cron/notification delivery"
+    prompt: "Home Channel Chat ID"
+    password: false
