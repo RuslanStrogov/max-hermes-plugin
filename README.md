@@ -1,18 +1,55 @@
-# MAX Hermes Plugin
+<div align="center">
 
-Платформенный плагин для [Hermes Agent](https://hermes-agent.nousresearch.com) — подключает мессенджер [MAX](https://max.ru) через Bot API.
+  <img src="banner.png" alt="MAX Hermes Plugin Banner" width="100%"/>
 
-## Возможности
+  <p>
+    <img src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white" alt="Python"/>
+    <img src="https://img.shields.io/badge/Hermes-Agent-8B5CF6?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjIiPjxwb2x5bGluZSBwb2ludHM9IjEzIDMgMTMgMTcgOCAxNyA4IDIxIDE2IDIxIDE2IDcgMjEgNyAyMSAzIDEzIDMiLz48L3N2Zz4=" alt="Hermes"/>
+    <img src="https://img.shields.io/badge/MAX-Bot%20API-6366F1?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iIzYzNjZmMSI+PHBhdGggZD0iTTEyIDJMMTggOEwxOCAyMkw2IDIyTDYgOEwxMiAyWiIvPjwvc3ZnPg==" alt="MAX"/>
+    <img src="https://img.shields.io/badge/License-MIT-22C55E" alt="MIT"/>
+  </p>
 
-- ✅ Приём и отправка текстовых сообщений
-- ✅ Inline keyboard (кнопки с callback)
-- ✅ Индикатор «Печатает...»
-- ✅ Markdown-форматирование
-- ✅ Белый список пользователей
-- ✅ Webhook + Long Polling
-- ✅ Отправка изображений (через upload API)
+  <p>
+    <img src="https://img.shields.io/badge/Webhook-✅-34D399" alt="Webhook"/>
+    <img src="https://img.shields.io/badge/Inline%20Keyboard-✅-34D399" alt="Keyboard"/>
+    <img src="https://img.shields.io/badge/Media-✅-34D399" alt="Media"/>
+    <img src="https://img.shields.io/badge/Markdown-✅-34D399" alt="Markdown"/>
+  </p>
 
-## Установка
+  <h3>Нативный платформенный плагин для <a href="https://hermes-agent.nousresearch.com">Hermes Agent</a></h3>
+  <p>Подключает мессенджер <a href="https://max.ru">MAX</a> через Bot API — полная интеграция с AI-агентом</p>
+
+  <p><sub>🎨 Designed by <a href="https://br-design.ru/">BR-DESIGN</a></sub></p>
+
+</div>
+
+---
+
+## 📋 Содержание
+
+- [Возможности](#-возможности)
+- [Установка](#-установка)
+- [Настройка](#-настройка)
+- [Использование](#-использование)
+- [Архитектура](#-архитектура)
+- [Сравнение с Telegram Bot API](#-сравнение-с-telegram-bot-api)
+- [Лицензия](#-лицензия)
+
+---
+
+## ✨ Возможности
+
+| Фича | Статус |
+|------|--------|
+| Приём и отправка текстовых сообщений | ✅ |
+| Inline keyboard (кнопки с callback) | ✅ |
+| Индикатор «Печатает...» | ✅ |
+| Markdown-форматирование | ✅ |
+| Белый список пользователей | ✅ |
+| Webhook + Long Polling | ✅ |
+| Отправка изображений (через upload API) | ✅ |
+
+## 📦 Установка
 
 ### Из исходников
 
@@ -31,13 +68,11 @@ hermes gateway restart
 hermes plugins install max-platform
 ```
 
-## Настройка
+## ⚙️ Настройка
 
 ### 1. Создайте бота в MAX
 
-> ⚠️ **Важно:** Создание ботов на платформе MAX доступно **только юридическим лицам, ИП и самозанятым** (резидентам РФ). Физические лицам создание ботов **недоступно**.
-
-**Требования к профилю:**
+> ⚠️ **Важно:** Создание ботов на платформе MAX доступно **только юридическим лицам, ИП и самозанятым** (резидентам РФ). Физическим лицам создание ботов **недоступно**.
 
 | Тип профиля | Кол-во ботов |
 |---|---|
@@ -47,16 +82,15 @@ hermes plugins install max-platform
 **Пошаговая инструкция:**
 
 1. Перейдите на [портал MAX для партнёров](https://business.max.ru)
-2. **Создайте и верифицируйте профиль** организации, ИП или самозанятого (это обязательный шаг)
+2. **Создайте и верифицируйте профиль** организации, ИП или самозанятого
 3. В панели управления нажмите **«Добавить бота»**
 4. Заполните данные бота (карточка):
-   - **Название** — от 1 до 59 символов (латиница, кириллица, цифры; эмодзи не поддерживаются)
-   - **Никнейм** — генерируется автоматически (например, `se13320221_bot` для ИП/юрлиц). Ник должен заканчиваться на `_bot` или `bot`, длина 11–60 символов
-   - Сайт организации (не более 1024 символов)
-   - Логотип и описание
+   - **Название** — от 1 до 59 символов
+   - **Никнейм** — генерируется автоматически (должен заканчиваться на `_bot`)
+   - Сайт организации, логотип и описание
 5. Нажмите **«Готово»** — бот создан и отправлен на **модерацию**
-6. Дождитесь уведомления о прохождении модерации (приходит в личные сообщения от бота «MAX для бизнеса»)
-7. После модерации **получите токен бота** — он понадобится для настройки
+6. Дождитесь уведомления о прохождении модерации
+7. После модерации **получите токен бота**
 
 Подробнее: [MAX для разработчиков — Создание чат-бота](https://dev.max.ru/docs/chatbots/bots-create)
 
@@ -66,7 +100,7 @@ hermes plugins install max-platform
 # Добавьте в ~/.hermes/.env
 MAX_BOT_TOKEN=your_bot_token_here
 MAX_WEBHOOK_URL=https://your-domain.com/webhook
-MAX_WEBHOOK_SECRET=optional-secret
+MAX_WEBHOOK_SECRET=your_secret
 ```
 
 Или через `config.yaml`:
@@ -105,7 +139,7 @@ server {
 hermes gateway restart
 ```
 
-## Использование
+## 🚀 Использование
 
 После подключения бот будет автоматически:
 - Принимать сообщения от пользователей MAX
@@ -117,12 +151,52 @@ hermes gateway restart
 Агент может отправлять сообщения с кнопками:
 
 ```python
-# В системном промпте или через инструменты
 buttons = [
     [{"text": "Да", "payload": "yes"}, {"text": "Нет", "payload": "no"}]
 ]
 ```
 
-## Лицензия
+## 🏗️ Архитектура
 
-MIT
+```
+┌──────────┐   webhook    ┌─────────────────┐   native    ┌──────────────┐
+│          │ ──────────►  │                 │ ──────────►  │              │
+│ MAX Bot  │              │ MAX Hermes      │              │ Hermes Agent │
+│ API      │ ◄──────────  │ Plugin          │ ◄──────────  │              │
+│          │  send_msg    │ (Python)        │  response    │              │
+└──────────┘              └─────────────────┘              └──────────────┘
+```
+
+1. Пользователь пишет боту в MAX
+2. MAX API отправляет webhook на плагин
+3. Плагин передаёт сообщение в Hermes Agent
+4. Ответ Hermes отправляется обратно в MAX через Bot API
+
+## 📊 Сравнение с Telegram Bot API
+
+| Возможность | Telegram | MAX Bot API |
+|-------------|----------|-------------|
+| Webhook | ✅ | ✅ |
+| Long Polling | ✅ | ✅ |
+| Inline keyboard | ✅ | ✅ |
+| Reply keyboard | ✅ | ❌ (только inline) |
+| Callback buttons | ✅ | ✅ |
+| Send/Edit/Delete messages | ✅ | ✅ |
+| Typing indicator | ✅ | ✅ |
+| Read receipts | ✅ | ❌ |
+| Bot commands menu | ✅ | ❌ |
+| Send images/files | ✅ | ✅ (через upload) |
+| Group chats | ✅ | ✅ |
+| Channels | ✅ | ✅ |
+
+## 📄 Лицензия
+
+MIT License. См. [LICENSE](LICENSE).
+
+---
+
+<div align="center">
+
+  <sub>🎨 Designed by <a href="https://br-design.ru/">BR-DESIGN</a></sub>
+
+</div>
