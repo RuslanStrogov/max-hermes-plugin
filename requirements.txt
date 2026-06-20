@@ -1,3 +1,4 @@
 aiohttp>=3.9
 pydantic>=2.0
 pyyaml>=6.0
+max-shared @ file:///mnt/data/projects/max-shared
