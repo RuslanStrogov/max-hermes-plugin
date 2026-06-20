@@ -2,18 +2,16 @@
 
   <img src="banner.png" alt="MAX Hermes Plugin Banner" width="100%"/>
 
-  <p>
-    <img src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white" alt="Python"/>
-    <img src="https://img.shields.io/badge/Hermes-Agent-8B5CF6?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjIiPjxwb2x5bGluZSBwb2ludHM9IjEzIDMgMTMgMTcgOCAxNyA4IDIxIDE2IDIxIDE2IDcgMjEgNyAyMSAzIDEzIDMiLz48L3N2Zz4=" alt="Hermes"/>
-    <img src="https://img.shields.io/badge/MAX-Bot%20API-6366F1?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iIzYzNjZmMSI+PHBhdGggZD0iTTEyIDJMMTggOEwxOCAyMkw2IDIyTDYgOEwxMiAyWiIvPjwvc3ZnPg==" alt="MAX"/>
-    <img src="https://img.shields.io/badge/License-MIT-22C55E" alt="MIT"/>
-  </p>
+  <h3>🛠️ Технологии</h3>
 
   <p>
-    <img src="https://img.shields.io/badge/Webhook-✅-34D399" alt="Webhook"/>
-    <img src="https://img.shields.io/badge/Inline%20Keyboard-✅-34D399" alt="Keyboard"/>
-    <img src="https://img.shields.io/badge/Media-✅-34D399" alt="Media"/>
-    <img src="https://img.shields.io/badge/Markdown-✅-34D399" alt="Markdown"/>
+    <img src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white" alt="Python"/>
+    <img src="https://img.shields.io/badge/MAX-Bot%20API-6366F1?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iIzYzNjZmMSI+PHBhdGggZD0iTTEyIDJMMTggOEwxOCAyMkw2IDIyTDYgOEwxMiAyWiIvPjwvc3ZnPg==&logoColor=white" alt="MAX"/>
+    <img src="https://img.shields.io/badge/Hermes-Agent-8B5CF6?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjIiPjxwb2x5bGluZSBwb2ludHM9IjEzIDMgMTMgMTcgOCAxNyA4IDIxIDE2IDIxIDE2IDcgMjEgNyAyMSAzIDEzIDMiLz48L3N2Zz4=" alt="Hermes"/>
+    <img src="https://img.shields.io/badge/Nginx-009639?logo=nginx&logoColor=white" alt="Nginx"/>
+    <img src="https://img.shields.io/badge/GitHub%20Actions-2088FF?logo=githubactions&logoColor=white" alt="GitHub Actions"/>
+    <img src="https://img.shields.io/badge/Let's%20Encrypt-003A70?logo=letsencrypt&logoColor=white" alt="Let's Encrypt"/>
+    <img src="https://img.shields.io/badge/License-MIT-22C55E" alt="MIT"/>
   </p>
 
   <h3>Нативный платформенный плагин для <a href="https://hermes-agent.nousresearch.com">Hermes Agent</a></h3>
