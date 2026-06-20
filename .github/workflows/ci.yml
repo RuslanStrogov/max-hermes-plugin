@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio pyyaml aiohttp pydantic
+
+      - name: Lint plugin.yaml
+        run: |
+          python -c "import yaml; yaml.safe_load(open('plugins/platforms/max/plugin.yaml')); print('plugin.yaml OK')"
+
+      - name: Check Python syntax
+        run: |
+          python -m py_compile plugins/platforms/max/adapter.py
+          python -m py_compile plugins/platforms/max/__init__.py
+          echo "Syntax OK"
