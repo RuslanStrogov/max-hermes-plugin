@@ -212,3 +212,5 @@ MIT License. См. [LICENSE](LICENSE).
   <sub>🎨 Designed by <a href="https://br-design.ru/">BR-DESIGN</a></sub>
 
 </div>
+
+<!-- bumped: 2026-06-29 01:20 -->
