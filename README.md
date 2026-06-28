@@ -213,4 +213,10 @@ MIT License. См. [LICENSE](LICENSE).
 
 </div>
 
-<!-- bumped: 2026-06-29 01:20 -->
+
+---
+<div align="center">
+
+  <sub>🇷🇺 Опенсорс — **Поддержи наш продукт** · <a href="https://br-design.ru/">BR-DESIGN</a></sub>
+
+</div>
