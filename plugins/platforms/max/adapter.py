@@ -419,11 +419,13 @@ class MaxAdapter(BasePlatformAdapter):
             response_text = COMMAND_RESPONSES[command_text]
             if self._client:
                 try:
+                    original_mid = body.get("mid")
                     await self._client.send_message(
                         chat_id=chat_id,
                         user_id=None,
                         text=response_text,
                         format="markdown",
+                        reply_to=original_mid,
                     )
                 except Exception as e:
                     logger.warning("Failed to send command response: %s", e)

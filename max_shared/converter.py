@@ -317,11 +317,13 @@ class MessageConverter:
         response: Dict[str, Any],
         chat_id: Optional[int] = None,
         user_id: Optional[int] = None,
+        reply_to: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Convert internal response to MAX API message format.
 
         For dialogs (DM): pass user_id — takes priority over chat_id.
         For group chats: pass chat_id only.
+        reply_to: optional MID to quote the original message.
         """
         text = response.get("message", response.get("text", ""))
         if not text:
@@ -335,6 +337,9 @@ class MessageConverter:
             payload["chat_id"] = chat_id
         else:
             logger.warning("Neither user_id nor chat_id available for response")
+
+        if reply_to:
+            payload["reply_to"] = reply_to
 
         if has_markdown(text):
             payload["format"] = "markdown"
