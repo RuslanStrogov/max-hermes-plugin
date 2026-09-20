@@ -74,6 +74,17 @@ from max_shared.max_client import MAXClient, MAXApiError
 
 logger = logging.getLogger(__name__)
 
+# Role instruction prepended to every user message
+ROLE_INSTRUCTION = (
+    "[Системные инструкции]\n"
+    "Ты — MAX Bot. Правила:\n"
+    "1. Отвечай КРАТКО (1-3 предложения).\n"
+    "2. НЕ запускай инструменты без необходимости.\n"
+    "3. На /status ответь кратко: 'Bridge работает.'\n"
+    "4. Общайся на русском.\n"
+    "[/Системные инструкции]\n\n"
+)
+
 
 def _get_env_or_extra(
     config: PlatformConfig, key: str, extra_key: str, default: str = ""
@@ -358,12 +369,13 @@ class MaxAdapter(BasePlatformAdapter):
             return
 
         user_name = sender.get("name", sender.get("first_name", "Unknown"))
+        text_with_role = f"{ROLE_INSTRUCTION}{text}" if text else ROLE_INSTRUCTION.rstrip("\n")
         event = MessageEvent(
             message_id=body.get("mid", str(uuid.uuid4())),
             chat_id=str(chat_id),
             user_id=str(user_id),
             user_name=user_name,
-            text=text,
+            text=text_with_role,
             timestamp=msg.get("timestamp", int(time.time() * 1000)),
             platform=Platform.CUSTOM,
         )
@@ -405,14 +417,33 @@ class MaxAdapter(BasePlatformAdapter):
             await self._client.answer_callback(callback_id=callback_id)
 
     def _is_dedup(self, msg_id: str) -> bool:
-        """Check for duplicate messages."""
+        """Check for duplicate messages.
+
+        Returns True if msg_id was already seen within DEDUP_WINDOW.
+        """
         now = time.time()
+
+        # Already seen → duplicate
+        if msg_id in self._dedup_cache:
+            age = now - self._dedup_cache[msg_id]
+            if age < DEDUP_WINDOW_SECONDS:
+                logger.debug("Duplicate message %s (age=%.0fs) — ignoring", msg_id, age)
+                return True
+            # Expired entry — allow through and update timestamp
+            self._dedup_cache[msg_id] = now
+            return False
+
+        # New message — record it
         self._dedup_cache[msg_id] = now
+
+        # Periodic cleanup
         if len(self._dedup_cache) > DEDUP_MAX_SIZE:
             cutoff = now - DEDUP_WINDOW_SECONDS
             self._dedup_cache = {
                 k: v for k, v in self._dedup_cache.items() if v > cutoff
             }
+            logger.debug("Dedup cache cleaned: %d entries remain", len(self._dedup_cache))
+
         return False
 
 
