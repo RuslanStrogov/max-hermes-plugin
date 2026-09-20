@@ -131,7 +131,7 @@ class MaxAdapter(BasePlatformAdapter):
     """
 
     def __init__(self, config: PlatformConfig):
-        super().__init__(config, Platform.CUSTOM)
+        super().__init__(config, Platform.RELAY)
         self._token = _get_env_or_extra(config, "MAX_BOT_TOKEN", "token", "")
         self._webhook_url = _get_env_or_extra(
             config, "MAX_WEBHOOK_URL", "webhook_url", ""
@@ -383,7 +383,7 @@ class MaxAdapter(BasePlatformAdapter):
             user_name=user_name,
             text=text_with_role,
             timestamp=msg.get("timestamp", int(time.time() * 1000)),
-            platform=Platform.CUSTOM,
+            platform=Platform.RELAY,
         )
 
         await self._dispatch_message(event)
@@ -413,7 +413,7 @@ class MaxAdapter(BasePlatformAdapter):
             user_name=user_name,
             text=text,
             timestamp=int(time.time() * 1000),
-            platform=Platform.CUSTOM,
+            platform=Platform.RELAY,
         )
 
         await self._dispatch_message(event)
