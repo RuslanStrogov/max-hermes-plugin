@@ -77,11 +77,7 @@ logger = logging.getLogger(__name__)
 # Role instruction prepended to every user message
 ROLE_INSTRUCTION = (
     "[Системные инструкции]\n"
-    "Ты — MAX Bot. Правила:\n"
-    "1. Отвечай КРАТКО (1-3 предложения).\n"
-    "2. НЕ запускай инструменты без необходимости.\n"
-    "3. На /status ответь кратко: 'Bridge работает.'\n"
-    "4. Общайся на русском.\n"
+    "Ты — MAX Bot. Общайся на русском. Будь полезным.\n"
     "[/Системные инструкции]\n\n"
 )
 

@@ -112,7 +112,7 @@ class MAXMessageBody(BaseModel):
     text: Optional[str] = None
     mid: Optional[str] = None
     seq: Optional[int] = None
-    attachments: List[MAXAttachment] = Field(default_factory=list)
+    attachments: Optional[List[MAXAttachment]] = None
 
     model_config = ConfigDict(extra="allow")
 
