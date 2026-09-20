@@ -187,6 +187,13 @@ buttons = [
 | Group chats | ✅ | ✅ |
 | Channels | ✅ | ✅ |
 
+## 📄 Recent Fixes
+
+| # | Фикс | Файл |
+|---|------|------|
+| 1 | **`attachments` → `Optional`** — Pydantic больше не падает, если MAX присылает `null` | `max_shared/models.py` |
+| 2 | **ROLE_INSTRUCTION смягчён** — убран запрет инструментов и "1-3 предложения". Агент может отвечать как полноценный Hermes | `adapter.py` |
+
 ## 📄 Лицензия
 
 MIT License. См. [LICENSE](LICENSE).
