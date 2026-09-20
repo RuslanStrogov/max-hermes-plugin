@@ -167,7 +167,7 @@ class MaxAdapter(BasePlatformAdapter):
     def platform_name(self) -> str:
         return "max"
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start webhook server and register webhook with MAX."""
         try:
             self._client = MAXClient(
@@ -182,12 +182,13 @@ class MaxAdapter(BasePlatformAdapter):
                 return False
             logger.info("Connected to MAX as: %s", bot_info.get("name", "unknown"))
 
-            # Register webhook
-            sub_result = await self._client.subscribe(url=self._webhook_url)
-            if sub_result:
-                logger.info("Webhook registered: %s", self._webhook_url)
-            else:
-                logger.warning("Webhook registration failed — may already be registered")
+            # Register webhook (skip on reconnect if already registered)
+            if not is_reconnect:
+                sub_result = await self._client.subscribe(url=self._webhook_url)
+                if sub_result:
+                    logger.info("Webhook registered: %s", self._webhook_url)
+                else:
+                    logger.warning("Webhook registration failed — may already be registered")
 
             # Start local webhook server
             await self._start_webhook_server()
@@ -210,30 +211,39 @@ class MaxAdapter(BasePlatformAdapter):
             self._client = None
         logger.info("Disconnected from MAX")
 
-    async def send(self, chat_id: str, text: str, **kwargs) -> SendResult:
+    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+        """Get basic chat info."""
+        return {"name": chat_id, "type": "max"}
+
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> SendResult:
         """Send a text message to MAX."""
-        if not text:
+        if not content:
             return SendResult(success=False, error="Empty message")
 
-        if len(text) > MAX_MESSAGE_LENGTH:
-            text = text[: MAX_MESSAGE_LENGTH - 3] + "..."
+        if len(content) > MAX_MESSAGE_LENGTH:
+            content = content[: MAX_MESSAGE_LENGTH - 3] + "..."
 
-        payload: Dict[str, Any] = {"text": text}
+        payload: Dict[str, Any] = {"text": content}
 
-        if has_markdown(text):
+        if has_markdown(content):
             payload["format"] = "markdown"
 
-        reply_to = kwargs.get("reply_to")
         if reply_to:
             payload["reply_to"] = reply_to
 
-        buttons = kwargs.get("buttons")
+        buttons = (metadata or {}).get("buttons")
         if buttons:
             payload["attachments"] = [
                 MessageConverter.build_inline_keyboard(buttons)
             ]
 
-        user_id = kwargs.get("user_id")
+        user_id = (metadata or {}).get("user_id")
         params: Dict[str, Any] = {}
         if user_id:
             params["user_id"] = str(user_id)
@@ -445,5 +455,20 @@ class MaxAdapter(BasePlatformAdapter):
 
 def register(ctx):
     """Register the MAX platform adapter with Hermes gateway."""
-    ctx.register_platform("max", MaxAdapter)
+    def _check():
+        try:
+            import aiohttp  # noqa: F401
+            token = os.environ.get("MAX_BOT_TOKEN", "")
+            return bool(token)
+        except ImportError:
+            return False
+
+    ctx.register_platform(
+        name="max",
+        label="MAX",
+        adapter_factory=lambda cfg: MaxAdapter(cfg),
+        check_fn=_check,
+        emoji="💬",
+        setup_fn=None,
+    )
     logger.info("MAX platform adapter registered")
