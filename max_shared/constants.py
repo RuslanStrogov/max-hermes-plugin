@@ -1,6 +1,8 @@
 """Shared constants for MAX Bot API clients."""
 
 DEFAULT_API_BASE_URL = "https://platform-api.max.ru"
+# Commands API uses a different base URL per MAX docs
+COMMANDS_API_BASE_URL = "https://platform-api2.max.ru"
 MAX_MESSAGE_LENGTH = 4096
 DEDUP_WINDOW_SECONDS = 300
 DEDUP_MAX_SIZE = 1000

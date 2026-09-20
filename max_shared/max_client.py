@@ -11,7 +11,11 @@ from typing import Any, Dict, List, Optional
 
 import aiohttp
 
-from max_shared.constants import DEFAULT_API_BASE_URL, DEFAULT_TIMEOUT_SECONDS
+from max_shared.constants import (
+    DEFAULT_API_BASE_URL,
+    COMMANDS_API_BASE_URL,
+    DEFAULT_TIMEOUT_SECONDS,
+)
 from max_shared.models import (
     SendMessageResponse,
     SubscriptionResponse,
@@ -121,6 +125,33 @@ class MAXClient:
     async def get_bot_info(self) -> Dict[str, Any]:
         """GET /me — get bot info."""
         return await self._request("GET", "/me")
+
+    # ── Bot Commands (menu button) ───────────────────────────────────────────
+
+    async def set_commands(
+        self,
+        commands: List[Dict[str, str]],
+    ) -> Dict[str, Any]:
+        """PATCH /me/commands — set bot commands shown in the input menu.
+
+        MAX shows these as a "/" button or "Открыть!" button next to the text input.
+        Commands are displayed as hints when user types "/".
+
+        Each command dict:
+            {"name": "command_name", "description": "Short description"}
+
+        Pass an empty list to remove all commands.
+
+        Uses platform-api2.max.ru as the base URL (separate from main API).
+        """
+        base_url = self._base_url
+        try:
+            self._base_url = COMMANDS_API_BASE_URL
+            result = await self._request("PATCH", "/me/commands", data={"commands": commands})
+            logger.info("Bot commands updated: %d commands registered", len(commands))
+            return result
+        finally:
+            self._base_url = base_url
 
     # ── Messages ────────────────────────────────────────────────────────────
 
