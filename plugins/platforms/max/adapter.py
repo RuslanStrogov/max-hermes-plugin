@@ -72,6 +72,41 @@ from max_shared.converter import MessageConverter
 from max_shared.markdown import has_markdown
 from max_shared.max_client import MAXClient, MAXApiError
 
+DEFAULT_COMMANDS = [
+    {"name": "start", "description": "Начать диалог с ботом"},
+    {"name": "help", "description": "Помощь и информация о боте"},
+    {"name": "about", "description": "О боте и его возможностях"},
+]
+
+COMMAND_RESPONSES = {
+    "/start": (
+        "👋 **Привет!** Я — MAX Bot, соединяю MAX и Hermes AI.\n\n"
+        "Пиши любой вопрос или задачу — я передам её Hermes.\n\n"
+        "Команды:\n"
+        "• `/help` — помощь\n"
+        "• `/about` — информация"
+    ),
+    "/help": (
+        "ℹ️ **Помощь по MAX Bot**\n\n"
+        "Этот бот — мост между MAX и Hermes AI.\n\n"
+        "**Как пользоваться:**\n"
+        "Просто пиши сообщение, и я передам его Hermes.\n"
+        "Я поддерживаю текст, изображения, аудио и файлы.\n\n"
+        "**Команды:**\n"
+        "• `/start` — начать диалог\n"
+        "• `/help` — эта справка\n"
+        "• `/about` — информация о боте"
+    ),
+    "/about": (
+        "🤖 **MAX Bot**\n\n"
+        "Версия: 2.0.0\n"
+        "Платформа: Hermes AI + MAX\n\n"
+        "Разработано специально для интеграции MAX и Hermes.\n"
+        "Использует технологии: Python, aiohttp, MAX API."
+    ),
+}
+
+
 logger = logging.getLogger(__name__)
 
 # Role instruction prepended to every user message
@@ -181,6 +216,14 @@ class MaxAdapter(BasePlatformAdapter):
                 logger.error("Failed to get bot info — check MAX_BOT_TOKEN")
                 return False
             logger.info("Connected to MAX as: %s", bot_info.get("name", "unknown"))
+
+            # Register bot commands (menu button)
+            try:
+                cmds = DEFAULT_COMMANDS.copy()
+                await self._client.set_commands(cmds)
+                logger.info("Bot commands registered: %d commands", len(cmds))
+            except Exception as e:
+                logger.warning("Failed to register bot commands: %s (non-fatal)", e)
 
             # Register webhook (skip on reconnect if already registered)
             if not is_reconnect:
@@ -369,6 +412,22 @@ class MaxAdapter(BasePlatformAdapter):
         user_id = sender.get("user_id", 0)
         chat_id = recipient.get("chat_id", 0)
         text = body.get("text", "")
+
+        # Handle bot commands directly (without Hermes)
+        command_text = text.strip().lower() if text else ""
+        if command_text in COMMAND_RESPONSES:
+            response_text = COMMAND_RESPONSES[command_text]
+            if self._client:
+                try:
+                    await self._client.send_message(
+                        chat_id=chat_id,
+                        user_id=None,
+                        text=response_text,
+                        format="markdown",
+                    )
+                except Exception as e:
+                    logger.warning("Failed to send command response: %s", e)
+            return
 
         if self._allowed_users and user_id not in self._allowed_users:
             logger.warning("Unauthorized user %d — ignoring", user_id)
