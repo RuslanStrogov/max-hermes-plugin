@@ -466,6 +466,33 @@ MIT License. См. [LICENSE](LICENSE).
 
 ---
 
+## 🎬 Midjourney AI Animations
+
+AI-generated video animations, demonstrating cinematic visual generation with Midjourney.
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" width="50%">
+        <video src="assets/hugging-scifi.mp4" autoplay muted loop playsinline width="95%"></video>
+        <br/>
+        <sub>🎬 <strong>Sci-Fi Embrace</strong> — Two figures embracing in a surreal landscape, generated with Midjourney</sub>
+        <br/>
+        <a href="assets/hugging-scifi.mp4">📥 Full quality (13 MB)</a>
+      </td>
+      <td align="center" width="50%">
+        <video src="assets/supercar.mp4" autoplay muted loop playsinline width="95%"></video>
+        <br/>
+        <sub>🎬 <strong>Hyperrealistic Supercar</strong> — Rear three-quarter view in cinematic lighting, generated with Midjourney</sub>
+        <br/>
+        <a href="assets/supercar.mp4">📥 Full quality (12 MB)</a>
+      </td>
+    </tr>
+  </table>
+</div>
+
+---
+
 ## 🔗 Связанные проекты
 
 | Проект | Описание |
