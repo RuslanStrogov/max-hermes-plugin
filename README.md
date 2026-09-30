@@ -246,8 +246,9 @@ MIT License. См. [LICENSE](LICENSE).
 
 | Проект | Описание |
 |--------|----------|
-| [MAX Hermes Bridge](https://github.com/RuslanStrogov/max-hermes) | Python-мост между MAX Bot API и Hermes Agent через CLI. Поддерживает webhook, Docker, systemd. |
-| [MAX Shared](https://github.com/RuslanStrogov/max-shared) | Общая библиотека: MAXClient, модели, конвертер, markdown |
+|| [MAX Hermes Bridge](https://github.com/RuslanStrogov/max-hermes) | Python-мост между MAX Bot API и Hermes Agent через CLI. Поддерживает webhook, Docker, systemd. |
+|| [MAX OpenClaw](https://github.com/RuslanStrogov/max-openclaw) | MAX Channel Plugin для OpenClaw — TypeScript, Vitest, CI/CD |
+|| [MAX Shared](https://github.com/RuslanStrogov/max-shared) | Общая библиотека: MAXClient, модели, конвертер, markdown |
 
 ## 📢 Пресс-релизы
 
