@@ -350,25 +350,39 @@ class MaxAdapter(BasePlatformAdapter):
 
     async def _polling_loop(self):
         """Fallback long-polling loop for receiving messages."""
+        offset = 0
         while not self._polling_stop.is_set():
             try:
                 updates = await self._client.get_updates(
-                    last_message_ids=self._last_message_ids
+                    offset=offset,
+                    limit=100,
+                    timeout=30,
                 )
                 if updates:
                     for update in updates:
                         await self._handle_update(update)
+                        mid = (
+                            update.get("message", {}).get("body", {}).get("mid", "")
+                            if update.get("message")
+                            else ""
+                        )
+                        if mid:
+                            try:
+                                offset = max(offset, int(mid))
+                            except (ValueError, TypeError):
+                                pass
             except asyncio.CancelledError:
                 break
             except MAXApiError as e:
                 if e.code in ("forbidden", "unauthorized"):
-                    logger.error("Polling failed: %s — stopping", e)
+                    logger.error("Polling failed: %s -- stopping", e)
                     break
                 logger.warning("Polling API error: %s (retrying in 5s)", e)
                 await asyncio.sleep(5)
             except Exception as e:
                 logger.warning("Polling error: %s (retrying in 15s)", e)
                 await asyncio.sleep(15)
+
 
     async def _handle_message_created(self, data: Dict):
         """Process incoming text message from MAX."""
