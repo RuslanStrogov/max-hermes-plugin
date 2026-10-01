@@ -219,7 +219,8 @@ class MaxAdapter(BasePlatformAdapter):
             if not bot_info:
                 logger.error("Failed to get bot info — check MAX_BOT_TOKEN")
                 return False
-            logger.info("Connected to MAX as: %s", bot_info.get("name", "unknown"))
+            self._bot_user_id = bot_info.get("user_id", 0)
+            logger.info("Connected to MAX as: %s (user_id=%s)", bot_info.get("name", "unknown"), self._bot_user_id)
 
             # Register bot commands (menu button)
             try:
@@ -323,6 +324,12 @@ class MaxAdapter(BasePlatformAdapter):
     def _should_reply(self, text: str, user_id: int = 0, chat_type: str = "dialog") -> bool:
         """Проверяет, нужно ли отвечать (упомянут бот, триггер-слова, allowed_users)."""
         if not text:
+            return False
+        # Не отвечаем на свои же сообщения
+        bot_self_id = int(os.environ.get("MAX_BOT_SELF_ID", "0")) or \
+            getattr(self, '_bot_user_id', 0)
+        if bot_self_id and user_id == bot_self_id:
+            logger.info("Self-msg ignored: user_id=%s == bot_self_id", user_id)
             return False
         # В личных чатах (dialog) отвечаем всегда
         if chat_type in ("dialog",):
