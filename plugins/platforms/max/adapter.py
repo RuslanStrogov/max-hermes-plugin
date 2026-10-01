@@ -559,7 +559,15 @@ class MaxAdapter(BasePlatformAdapter):
         if user_id:
             params["user_id"] = str(user_id)
         elif chat_id:
-            params["chat_id"] = str(chat_id)
+            # MAX API: для личных сообщений используем user_id вместо chat_id
+            try:
+                cid = int(chat_id)
+                if cid > 0:
+                    params["user_id"] = str(cid)
+                else:
+                    params["chat_id"] = str(cid)
+            except (ValueError, TypeError):
+                params["chat_id"] = str(chat_id)
         else:
             return SendResult(success=False, error="No chat_id or user_id provided")
 
