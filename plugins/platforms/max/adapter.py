@@ -1,5 +1,4 @@
-"""
-MAX Bot API Platform Adapter for Hermes Agent.
+"""MAX Bot API Platform Adapter for Hermes Agent.
 
 A plugin-based gateway adapter that connects to the MAX messenger (max.ru)
 via Bot API webhooks. Receives incoming messages as HTTP POST, sends
@@ -37,6 +36,7 @@ Environment variables (all read at adapter construct time, env wins over config.
     MAX_HOME_CHANNEL         Chat ID for cron/notification delivery
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -46,6 +46,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urljoin, urlparse
+from datetime import datetime, timezone
 
 try:
     import aiohttp
@@ -54,6 +55,11 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     aiohttp = None  # type: ignore[assignment]
 
+try:
+    from aiohttp import web
+except ImportError:
+    web = None  # type: ignore[assignment]
+
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -61,6 +67,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from gateway.session import SessionSource
 
 from max_shared.constants import (
     DEFAULT_API_BASE_URL,
@@ -72,42 +79,27 @@ from max_shared.converter import MessageConverter
 from max_shared.markdown import has_markdown
 from max_shared.max_client import MAXClient, MAXApiError
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_COMMANDS = [
     {"name": "start", "description": "Начать диалог с ботом"},
     {"name": "help", "description": "Помощь и информация о боте"},
-    {"name": "about", "description": "О боте и его возможностях"},
 ]
 
 COMMAND_RESPONSES = {
-    "/start": (
-        "👋 **Привет!** Я — MAX Bot, соединяю MAX и Hermes AI.\n\n"
-        "Пиши любой вопрос или задачу — я передам её Hermes.\n\n"
-        "Команды:\n"
-        "• `/help` — помощь\n"
-        "• `/about` — информация"
-    ),
+    "/start": "👋 Привет! Я бот Hermes Agent на платформе MAX. Готов помогать!",
+    "start": "👋 Привет! Я бот Hermes Agent на платформе MAX. Готов помогать!",
     "/help": (
-        "ℹ️ **Помощь по MAX Bot**\n\n"
-        "Этот бот — мост между MAX и Hermes AI.\n\n"
-        "**Как пользоваться:**\n"
-        "Просто пиши сообщение, и я передам его Hermes.\n"
-        "Я поддерживаю текст, изображения, аудио и файлы.\n\n"
-        "**Команды:**\n"
-        "• `/start` — начать диалог\n"
-        "• `/help` — эта справка\n"
-        "• `/about` — информация о боте"
+        "📚 Команды бота:\n"
+        "/start — начать диалог\n"
+        "/help — эта справка"
     ),
-    "/about": (
-        "🤖 **MAX Bot**\n\n"
-        "Версия: 2.0.0\n"
-        "Платформа: Hermes AI + MAX\n\n"
-        "Разработано специально для интеграции MAX и Hermes.\n"
-        "Использует технологии: Python, aiohttp, MAX API."
+    "help": (
+        "📚 Команды бота:\n"
+        "/start — начать диалог\n"
+        "/help — эта справка"
     ),
 }
-
-
-logger = logging.getLogger(__name__)
 
 # Role instruction prepended to every user message
 ROLE_INSTRUCTION = (
@@ -166,7 +158,7 @@ class MaxAdapter(BasePlatformAdapter):
     """
 
     def __init__(self, config: PlatformConfig):
-        super().__init__(config, Platform.RELAY)
+        super().__init__(config, Platform.MAX)
         self._token = _get_env_or_extra(config, "MAX_BOT_TOKEN", "token", "")
         self._webhook_url = _get_env_or_extra(
             config, "MAX_WEBHOOK_URL", "webhook_url", ""
@@ -176,17 +168,29 @@ class MaxAdapter(BasePlatformAdapter):
         )
         self._api_base_url = _get_env_or_extra(
             config, "MAX_API_BASE_URL", "api_base_url", DEFAULT_API_BASE_URL
-        ).rstrip("/")
+        )
+        self._question_separator = _get_env_or_extra(
+            config, "MAX_QUESTION_SEPARATOR", "question_separator", "."
+        )
         self._allowed_users = _parse_allowed_users(config)
         self._home_channel = _get_env_or_extra(
             config, "MAX_HOME_CHANNEL", "home_channel", ""
         )
-
-        self._client: Optional[MAXClient] = None
-        self._app: Optional[Any] = None
-        self._runner: Optional[Any] = None
-        self._dedup_cache: Dict[str, float] = {}
+        self._client: Optional["MAXClient"] = None
         self._connected = False
+
+        # Dedup
+        self._seen_ids: Set[str] = set()
+        self._dedup_lock = asyncio.Lock()
+
+        # Polling
+        self._polling_task: Optional[asyncio.Task] = None
+        self._polling_stop = asyncio.Event()
+        self._last_message_ids: Dict[str, str] = {}
+        # Вебхук-сервер
+        self._app: Any = None
+        self._runner: Any = None
+        self._site: Any = None
 
         if not AIOHTTP_AVAILABLE:
             raise ImportError(
@@ -236,23 +240,273 @@ class MaxAdapter(BasePlatformAdapter):
             # Start local webhook server
             await self._start_webhook_server()
 
+            # Start long-polling fallback
+            self._polling_stop = asyncio.Event()
+            self._polling_task = asyncio.create_task(self._polling_loop())
+            logger.info("Long-polling fallback started")
+
             self._connected = True
             return True
 
         except Exception as e:
-            logger.error("Failed to connect to MAX: %s", e)
+            logger.error("Failed to connect: %s", e, exc_info=True)
             return False
 
     async def disconnect(self):
-        """Stop webhook server and close connections."""
+        """Stop webhook server and polling."""
         self._connected = False
+        self._polling_stop.set()
+        if self._polling_task:
+            self._polling_task.cancel()
+            self._polling_task = None
+        if self._site:
+            await self._site.stop()
         if self._runner:
             await self._runner.cleanup()
-            self._runner = None
+        logger.info("Disconnected")
+
+    async def _start_webhook_server(self):
+        """Start aiohttp webhook server."""
+        async def handle_webhook(request: web.Request) -> web.Response:
+            body = await request.read()
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                return web.json_response({"error": "Invalid JSON"}, status=400)
+
+            # Verify signature
+            sig = request.headers.get("X-Hub-Signature-256", "")
+            if self._webhook_secret and not _verify_webhook_signature(body, sig, self._webhook_secret):
+                logger.warning("Invalid webhook signature")
+                return web.json_response({"error": "Invalid signature"}, status=403)
+
+            asyncio.ensure_future(self._handle_update(data))
+            return web.json_response({"ok": True})
+
+        async def handle_health(request: web.Request) -> web.Response:
+            return web.json_response({"status": "ok", "platform": "max"})
+
+        self._app = web.Application()
+        self._app.router.add_post("/webhook", handle_webhook)
+        self._app.router.add_get("/health", handle_health)
+
+        self._runner = web.AppRunner(self._app)
+        await self._runner.setup()
+
+        parsed = urlparse(self._webhook_url)
+        port = parsed.port or int(os.environ.get("MAX_LOCAL_PORT", "8787"))
+
+        site = web.TCPSite(self._runner, "0.0.0.0", port)
+        await site.start()
+        logger.info("Webhook server listening on port %d", port)
+
+    async def _handle_update(self, data: Dict):
+        """Handle incoming update from MAX."""
+        update_type = data.get("update_type", "")
+
+        # Dedup
+        msg_id = (
+            data.get("message", {}).get("body", {}).get("mid", "")
+            if data.get("message")
+            else ""
+        )
+        if msg_id and self._is_dedup(msg_id):
+            return
+
+        if update_type == "message_created":
+            await self._handle_message_created(data)
+        elif update_type == "message_callback":
+            await self._handle_message_callback(data)
+        else:
+            logger.debug("Unhandled update type: %s", update_type)
+
+    def _should_reply(self, text: str, user_id: int = 0, chat_type: str = "dialog") -> bool:
+        """Проверяет, нужно ли отвечать (упомянут бот, триггер-слова, allowed_users)."""
+        if not text:
+            return False
+        # В личных чатах (dialog) отвечаем всегда
+        if chat_type in ("dialog",):
+            return True
+        # Всегда отвечаем разрешённым пользователям
+        if self._allowed_users and user_id in self._allowed_users:
+            return True
+        # Отвечаем если упомянут бот (@username)
+        bot_username = os.environ.get("MAX_BOT_USERNAME", "").lower()
+        if bot_username and f"@{bot_username}" in text.lower():
+            return True
+        return False
+
+    def _is_dedup(self, msg_id: str) -> bool:
+        """Проверяет, не обрабатывали ли мы это сообщение ранее."""
+        if not msg_id:
+            return False
+        if msg_id in self._seen_ids:
+            logger.debug("Dedup: %s", msg_id)
+            return True
+        self._seen_ids.add(msg_id)
+        if len(self._seen_ids) > DEDUP_MAX_SIZE:
+            self._seen_ids.pop()
+        return False
+
+    async def _polling_loop(self):
+        """Fallback long-polling loop for receiving messages."""
+        while not self._polling_stop.is_set():
+            try:
+                updates = await self._client.get_updates(
+                    last_message_ids=self._last_message_ids
+                )
+                if updates:
+                    for update in updates:
+                        await self._handle_update(update)
+            except asyncio.CancelledError:
+                break
+            except MAXApiError as e:
+                if e.code in ("forbidden", "unauthorized"):
+                    logger.error("Polling failed: %s — stopping", e)
+                    break
+                logger.warning("Polling API error: %s (retrying in 5s)", e)
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.warning("Polling error: %s (retrying in 15s)", e)
+                await asyncio.sleep(15)
+
+    async def _handle_message_created(self, data: Dict):
+        """Process incoming text message from MAX."""
+        logger.info("HMC: ENTERED _handle_message_created update_type=%s", data.get("update_type", "??"))
+        msg = data.get("message", {})
+        sender = msg.get("sender", {})
+        recipient = msg.get("recipient", {})
+        body = msg.get("body", {})
+
+        user_id = sender.get("user_id", 0)
+        chat_id = recipient.get("chat_id", 0)
+        chat_type = recipient.get("type", "dialog")  # dialog/group/channel/supergroup
+        # Для личных сообщений (dialog) используем user_id вместо chat_id бота
+        if chat_type == "dialog":
+            chat_id = user_id
+        text = body.get("text", "")
+
+        # Handle bot commands directly (without Hermes)
+        command_text = text.strip().lower() if text else ""
+        if command_text in COMMAND_RESPONSES:
+            response_text = COMMAND_RESPONSES[command_text]
+            if self._client:
+                try:
+                    original_mid = body.get("mid")
+                    await self._client.send_message(
+                        chat_id=chat_id,
+                        user_id=None,
+                        text=response_text,
+                        format="markdown",
+                        reply_to=original_mid,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to send command response: %s", e)
+            return
+
+        if self._allowed_users and user_id not in self._allowed_users:
+            logger.warning("Unauthorized user %d — ignoring", user_id)
+            return
+
+        # Check if we should reply
+        if not self._should_reply(text, user_id=user_id, chat_type=chat_type):
+            return
+
+        user_name = sender.get("name", sender.get("first_name", "Unknown"))
+        text_with_role = f"{ROLE_INSTRUCTION}{text}" if text else ROLE_INSTRUCTION.rstrip("\n")
+        event = MessageEvent(
+            message_id=body.get("mid", str(uuid.uuid4())),
+            text=text_with_role,
+            source=SessionSource(
+                platform=self.platform,
+                chat_id=str(chat_id),
+                user_id=str(user_id),
+                user_name=user_name,
+            ),
+            timestamp=datetime.fromtimestamp(
+                msg.get("timestamp", int(time.time() * 1000)) / 1000
+            ),
+        )
+
+        # Отправляем индикатор «Печатает...» перед запуском агента
         if self._client:
-            await self._client.close()
-            self._client = None
-        logger.info("Disconnected from MAX")
+            logger.info("SENDING typing to chat_id=%s", str(chat_id))
+            await self.send_typing(str(chat_id))
+
+        # Принудительно чистим зависшие relay-сессии перед диспатчем
+        if hasattr(self, '_active_sessions'):
+            for k in list(self._active_sessions.keys()):
+                if 'agent:main:relay' in k:
+                    try:
+                        self._active_sessions.pop(k, None)
+                        self._pending_messages.pop(k, None)
+                        self._session_tasks.pop(k, None)
+                    except Exception:
+                        pass
+        logger.info("DMP: dispatching msg chat=%s text=%s handler=%s", str(chat_id), text[:30], bool(getattr(self, '_message_handler', None)))
+        # Прямой вызов _message_handler в обход session guard
+        if hasattr(self, '_message_handler') and self._message_handler is not None:
+            try:
+                logger.info("DMP: _message_handler CALLED for %s", str(chat_id))
+                await self._message_handler(event)
+            except Exception as e:
+                logger.error("DMP: _message_handler failed: %s", e, exc_info=True)
+        else:
+            try:
+                await self.handle_message(event)
+            except Exception as e:
+                logger.error("DMP: handle_message failed: %s", e, exc_info=True)
+        # Запоминаем chat_id для прямого пуллинга сообщений
+        self._last_message_ids[str(chat_id)] = body.get("mid", "")
+
+    async def _handle_message_callback(self, data: Dict):
+        """Handle callback from inline keyboard button."""
+        callback = data.get("callback", {})
+        msg = data.get("message", {})
+        sender = msg.get("sender", {}) if msg else {}
+        recipient = msg.get("recipient", {}) if msg else {}
+
+        user_id = sender.get("user_id", 0)
+        chat_id = recipient.get("chat_id", 0)
+        chat_type = recipient.get("type", "dialog")
+        callback_payload = callback.get("payload", "")
+        button_text = callback.get("text", "")
+
+        if self._allowed_users and user_id not in self._allowed_users:
+            return
+
+        user_name = sender.get("name", sender.get("first_name", "Unknown"))
+        text = f"[Кнопка: {button_text}]\nPayload: {callback_payload}"
+
+        event = MessageEvent(
+                    message_id=str(uuid.uuid4()),
+                    text=text,
+                    source=SessionSource(
+                        platform=self.platform,
+                        chat_id=str(chat_id),
+                        user_id=str(user_id),
+                        user_name=user_name,
+                    ),
+                    timestamp=datetime.fromtimestamp(
+                        time.time()
+                    ),
+                )
+
+        # Отправляем индикатор «Печатает...» перед запуском агента
+        if self._client:
+            await self.send_typing(str(chat_id))
+
+        # Прямой вызов _message_handler в обход session guard
+        if hasattr(self, '_message_handler') and self._message_handler is not None:
+            try:
+                await self._message_handler(event)
+            except Exception as e:
+                logger.error("Callback message handler failed: %s", e, exc_info=True)
+        else:
+            try:
+                await self.handle_message(event)
+            except Exception as e:
+                logger.error("Callback handle_message failed: %s", e, exc_info=True)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get basic chat info."""
@@ -298,220 +552,69 @@ class MaxAdapter(BasePlatformAdapter):
         query = "&".join(f"{k}={v}" for k, v in params.items())
         path = f"/messages?{query}" if query else "/messages"
 
+        logger.info("MAX send: %s text_len=%d", path, len(content))
         result = await self._client._request("POST", path, data=payload)
         if result:
+            mid = result.get("message", {}).get("body", {}).get("mid", "")
+            if chat_id:
+                self._last_message_ids[chat_id] = mid
+            logger.info("MAX send SUCCESS: mid=%s", mid)
             return SendResult(
                 success=True,
-                message_id=result.get("message", {})
-                .get("body", {})
-                .get("mid", ""),
+                message_id=mid,
             )
+        logger.error("MAX send FAILED: no result from API")
         return SendResult(success=False, error="Failed to send message")
 
     async def send_typing(self, chat_id: str):
         """Send typing indicator."""
+        logger.info("send_typing to chat_id=%s", chat_id)
         await self._client.send_chat_action(chat_id=int(chat_id), action="typing_on")
 
     async def send_image(
-        self, chat_id: str, image_url: str, caption: str = "", **kwargs
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: str = "",
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
         """Send an image to MAX."""
-        payload: Dict[str, Any] = {
-            "attachments": [{"type": "image", "payload": {"url": image_url}}]
-        }
-        if caption:
-            payload["text"] = caption
-
-        user_id = kwargs.get("user_id")
-        params: Dict[str, Any] = {}
-        if user_id:
-            params["user_id"] = str(user_id)
-        elif chat_id:
-            params["chat_id"] = str(chat_id)
-
-        query = "&".join(f"{k}={v}" for k, v in params.items())
-        path = f"/messages?{query}" if query else "/messages"
-
-        result = await self._client._request("POST", path, data=payload)
-        if result:
+        try:
+            if not self._client:
+                return SendResult(success=False, error="Not connected")
+            image_token = await self._client.upload_image(image_path)
+            if not image_token:
+                return SendResult(success=False, error="Failed to upload image")
+            result = await self._client.send_message(
+                chat_id=int(chat_id),
+                text=caption or "",
+                attachments=[{
+                    "type": "image",
+                    "payload": {"token": image_token},
+                }],
+                reply_to=reply_to,
+            )
             return SendResult(
                 success=True,
-                message_id=result.get("message", {})
-                .get("body", {})
-                .get("mid", ""),
+                message_id=result.message_id,
             )
-        return SendResult(success=False, error="Failed to send image")
+        except Exception as e:
+            logger.error("send_image error: %s", e)
+            return SendResult(success=False, error=str(e))
 
-    async def _start_webhook_server(self):
-        """Start aiohttp server for receiving webhooks."""
-        from aiohttp import web
-
-        async def handle_webhook(request: web.Request) -> web.Response:
-            try:
-                body = await request.read()
-                signature = request.headers.get("X-Max-Signature", "")
-
-                if not _verify_webhook_signature(
-                    body, signature, self._webhook_secret
-                ):
-                    return web.json_response({"error": "Invalid signature"}, status=401)
-
-                data = json.loads(body)
-                await self._handle_update(data)
-                return web.json_response({"ok": True})
-            except json.JSONDecodeError:
-                return web.json_response({"error": "Invalid JSON"}, status=400)
-            except Exception as e:
-                logger.exception("Webhook error: %s", e)
-                return web.json_response({"ok": True})
-
-        async def handle_health(request: web.Request) -> web.Response:
-            return web.json_response({"status": "ok", "platform": "max"})
-
-        self._app = web.Application()
-        self._app.router.add_post("/webhook", handle_webhook)
-        self._app.router.add_get("/health", handle_health)
-
-        self._runner = web.AppRunner(self._app)
-        await self._runner.setup()
-
-        parsed = urlparse(self._webhook_url)
-        port = parsed.port or 8787
-
-        site = web.TCPSite(self._runner, "0.0.0.0", port)
-        await site.start()
-        logger.info("Webhook server listening on port %d", port)
-
-    async def _handle_update(self, data: Dict):
-        """Handle incoming update from MAX."""
-        update_type = data.get("update_type", "")
-
-        # Dedup
-        msg_id = (
-            data.get("message", {}).get("body", {}).get("mid", "")
-            if data.get("message")
-            else ""
-        )
-        if msg_id and self._is_dedup(msg_id):
-            return
-
-        if update_type == "message_created":
-            await self._handle_message_created(data)
-        elif update_type == "message_callback":
-            await self._handle_message_callback(data)
-        else:
-            logger.debug("Unhandled update type: %s", update_type)
-
-    async def _handle_message_created(self, data: Dict):
-        """Handle incoming message."""
-        msg = data.get("message", {})
-        sender = msg.get("sender", {})
-        recipient = msg.get("recipient", {})
-        body = msg.get("body", {})
-
-        user_id = sender.get("user_id", 0)
-        chat_id = recipient.get("chat_id", 0)
-        text = body.get("text", "")
-
-        # Handle bot commands directly (without Hermes)
-        command_text = text.strip().lower() if text else ""
-        if command_text in COMMAND_RESPONSES:
-            response_text = COMMAND_RESPONSES[command_text]
-            if self._client:
-                try:
-                    original_mid = body.get("mid")
-                    await self._client.send_message(
-                        chat_id=chat_id,
-                        user_id=None,
-                        text=response_text,
-                        format="markdown",
-                        reply_to=original_mid,
-                    )
-                except Exception as e:
-                    logger.warning("Failed to send command response: %s", e)
-            return
-
-        if self._allowed_users and user_id not in self._allowed_users:
-            logger.warning("Unauthorized user %d — ignoring", user_id)
-            return
-
-        user_name = sender.get("name", sender.get("first_name", "Unknown"))
-        text_with_role = f"{ROLE_INSTRUCTION}{text}" if text else ROLE_INSTRUCTION.rstrip("\n")
-        event = MessageEvent(
-            message_id=body.get("mid", str(uuid.uuid4())),
-            chat_id=str(chat_id),
-            user_id=str(user_id),
-            user_name=user_name,
-            text=text_with_role,
-            timestamp=msg.get("timestamp", int(time.time() * 1000)),
-            platform=Platform.RELAY,
-        )
-
-        await self._dispatch_message(event)
-
-    async def _handle_message_callback(self, data: Dict):
-        """Handle callback from inline keyboard button."""
-        callback = data.get("callback", {})
-        msg = data.get("message", {})
-        sender = msg.get("sender", {}) if msg else {}
-        recipient = msg.get("recipient", {}) if msg else {}
-
-        user_id = sender.get("user_id", 0)
-        chat_id = recipient.get("chat_id", 0)
-        callback_payload = callback.get("payload", "")
-        button_text = callback.get("text", "")
-
-        if self._allowed_users and user_id not in self._allowed_users:
-            return
-
-        user_name = sender.get("name", sender.get("first_name", "Unknown"))
-        text = f"[Кнопка: {button_text}]\nPayload: {callback_payload}"
-
-        event = MessageEvent(
-            message_id=str(uuid.uuid4()),
-            chat_id=str(chat_id),
-            user_id=str(user_id),
-            user_name=user_name,
-            text=text,
-            timestamp=int(time.time() * 1000),
-            platform=Platform.RELAY,
-        )
-
-        await self._dispatch_message(event)
-
-        callback_id = callback.get("id", "")
-        if callback_id:
-            await self._client.answer_callback(callback_id=callback_id)
-
-    def _is_dedup(self, msg_id: str) -> bool:
-        """Check for duplicate messages.
-
-        Returns True if msg_id was already seen within DEDUP_WINDOW.
-        """
-        now = time.time()
-
-        # Already seen → duplicate
-        if msg_id in self._dedup_cache:
-            age = now - self._dedup_cache[msg_id]
-            if age < DEDUP_WINDOW_SECONDS:
-                logger.debug("Duplicate message %s (age=%.0fs) — ignoring", msg_id, age)
-                return True
-            # Expired entry — allow through and update timestamp
-            self._dedup_cache[msg_id] = now
+    async def health_check(self) -> bool:
+        """Health check: check MAX connection."""
+        if not self._client:
             return False
-
-        # New message — record it
-        self._dedup_cache[msg_id] = now
-
-        # Periodic cleanup
-        if len(self._dedup_cache) > DEDUP_MAX_SIZE:
-            cutoff = now - DEDUP_WINDOW_SECONDS
-            self._dedup_cache = {
-                k: v for k, v in self._dedup_cache.items() if v > cutoff
-            }
-            logger.debug("Dedup cache cleaned: %d entries remain", len(self._dedup_cache))
-
-        return False
+        try:
+            bot_info = await self._client.get_bot_info()
+            return bool(bot_info)
+        except Exception:
+            return False
+    async def _poll_inbox(self):
+        """Legacy polling — delegated to _polling_loop."""
+        pass
 
 
 def register(ctx):
