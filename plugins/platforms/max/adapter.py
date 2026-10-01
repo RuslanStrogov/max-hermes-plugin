@@ -379,8 +379,15 @@ class MaxAdapter(BasePlatformAdapter):
                     break
                 logger.warning("Polling API error: %s (retrying in 5s)", e)
                 await asyncio.sleep(5)
+            except asyncio.TimeoutError:
+                # Long-poll timeout — normal, just retry immediately
+                continue
             except Exception as e:
-                logger.warning("Polling error: %s (retrying in 15s)", e)
+                _msg = str(e).strip()
+                if _msg:
+                    logger.warning("Polling error: %s (retrying in 15s)", _msg)
+                else:
+                    logger.debug("Polling empty error (timeout?) — retrying")
                 await asyncio.sleep(15)
 
 
@@ -462,7 +469,10 @@ class MaxAdapter(BasePlatformAdapter):
         if hasattr(self, '_message_handler') and self._message_handler is not None:
             try:
                 logger.info("DMP: _message_handler CALLED for %s", str(chat_id))
-                await self._message_handler(event)
+                _resp = await self._message_handler(event)
+                # _message_handler возвращает текст ответа — отправляем его
+                if _resp and isinstance(_resp, str):
+                    await self.send(str(chat_id), _resp)
             except Exception as e:
                 logger.error("DMP: _message_handler failed: %s", e, exc_info=True)
         else:
