@@ -408,10 +408,18 @@ class MaxAdapter(BasePlatformAdapter):
 
         user_id = sender.get("user_id", 0)
         chat_id = recipient.get("chat_id", 0)
-        chat_type = recipient.get("type", "dialog")  # dialog/group/channel/supergroup
-        # Для личных сообщений (dialog) используем user_id вместо chat_id бота
-        if chat_type == "dialog":
+# Определяем тип чата: "chat_type" или "type", по умолчанию dialog
+        chat_type = (
+            recipient.get("chat_type") or recipient.get("type") or "dialog"
+        )
+        # В группах ID отрицательный — не заменяем на user_id
+        if chat_type == "dialog" and chat_id >= 0:
             chat_id = user_id
+        # Отладка
+        logger.info(
+            "HMC: chat_id=%s chat_type=%s type=%s user_id=%s",
+            chat_id, chat_type, recipient.get("type"), user_id
+        )
         text = body.get("text", "")
 
         # Handle bot commands directly (without Hermes)
