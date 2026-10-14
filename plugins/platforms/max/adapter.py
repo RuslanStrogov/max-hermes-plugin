@@ -765,6 +765,22 @@ class MaxAdapter(BasePlatformAdapter):
             payload["attachments"] = [
                 MessageConverter.build_inline_keyboard(buttons)
             ]
+        else:
+            # Кнопки-команды: строки вида "/status" в ответе превращаем в
+            # кликабельные кнопки типа message — нажатие отправляет команду
+            # как сообщение пользователя. Так нужную команду достаточно нажать.
+            content, cmd_buttons = self._extract_command_buttons(content)
+            if cmd_buttons and not content.strip():
+                # Ответ состоял только из команд — оставляем подпись.
+                content = "Нажми, чтобы выполнить:"
+            payload["text"] = content
+            if cmd_buttons:
+                payload["attachments"] = [{
+                    "type": "inline_keyboard",
+                    "payload": {"buttons": [
+                        [{"type": "message", "text": cmd}] for cmd in cmd_buttons
+                    ]},
+                }]
 
         user_id = (metadata or {}).get("user_id")
         params: Dict[str, Any] = {}
@@ -862,6 +878,46 @@ class MaxAdapter(BasePlatformAdapter):
                 line = line[: m2.start(2)] + _TOOL_NAMES_RU[m2.group(2)]
             lines.append(line)
         return "\n".join(lines)
+
+    # Строка, целиком состоящая из команды: "/status" или "- /status — описание".
+    _CMD_LINE_RE = re.compile(
+        r"^\s*(?:[-•*]\s*)?(/([a-z][a-z0-9_]*))"
+        r"(?:\s*[—–\-:]\s*(.+?))?\s*$"
+    )
+    _MAX_COMMAND_BUTTONS = 8
+
+    def _extract_command_buttons(self, text: str):
+        """Вынести строки-команды из ответа в кнопки типа ``message``.
+
+        Нажатие такой кнопки отправляет команду как сообщение пользователя —
+        её достаточно нажать, а не набирать вручную. Строки внутри блоков
+        ```...``` не трогаем. Возвращает (оставшийся текст, список команд).
+        """
+        if not text or "/" not in text:
+            return text, []
+        out: List[str] = []
+        cmds: List[str] = []
+        in_fence = False
+        for ln in text.split("\n"):
+            if ln.lstrip().startswith("```"):
+                in_fence = not in_fence
+                out.append(ln)
+                continue
+            if in_fence:
+                out.append(ln)
+                continue
+            m = self._CMD_LINE_RE.match(ln)
+            if m and len(cmds) < self._MAX_COMMAND_BUTTONS:
+                cmds.append(m.group(1))
+                continue
+            out.append(ln)
+        if not cmds:
+            return text, []
+        while out and not out[-1].strip():
+            out.pop()
+        while out and not out[0].strip():
+            out.pop(0)
+        return "\n".join(out), cmds
 
     async def edit_message(
         self,
