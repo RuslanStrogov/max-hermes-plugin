@@ -100,8 +100,22 @@ COMMAND_RESPONSES = {
 # задевать обычный текст ответов агента.
 _STATUS_SUBS = (
     (re.compile(r"⏳ Working — (\d+) min"), r"⏳ Работаю — \1 мин"),
+    (re.compile(r"⏳ Queued for the next turn"), "⏳ В очереди на следующий ход"),
     (re.compile(r"⏩ Steered into current run"), "⏩ Сообщение добавлено в текущий запуск"),
     (re.compile(r"⚡ Interrupting current task"), "⚡ Прерываю текущую задачу"),
+    (re.compile(r"Interrupting current task\.\.\."), "Прерываю текущую задачу…"),
+    (re.compile(r"⚠️\s*Reached maximum iterations \((\d+)\)\. Requesting summary\.\.\."),
+     r"⚠️ Достигнут лимит итераций (\1). Готовлю итог…"),
+    (re.compile(r"Queued for the next turn\.\s*\((\d+) queued\)"),
+     r"В очереди на следующий ход. (в очереди: \1)"),
+    (re.compile(r"Queued for the next turn\."), "В очереди на следующий ход."),
+    (re.compile(r"\((\d+) queued\)"), r"(в очереди: \1)"),
+    (re.compile(r"One moment\."), "Секунду."),
+    (re.compile(r"Your current task will be interrupted\."),
+     "Текущая задача будет прервана."),
+    (re.compile(r"Let me search for that…"), "Ищу это…"),
+    (re.compile(r"\bstill on it\b"), "всё ещё работаю"),
+    (re.compile(r"Stopping gateway"), "Останавливаю шлюз"),
     (re.compile(r"\biteration (\d+)/(\d+)"), r"итерация \1/\2"),
     (re.compile(r"\breceiving stream response\b"), "получаю ответ модели"),
     (re.compile(r"\bwaiting for non-streaming API response\b"), "жду ответ API"),
@@ -876,12 +890,13 @@ class MaxAdapter(BasePlatformAdapter):
                 continue
             # хвост вида "⏳ Работаю — 3 мин — terminal" в служебной строке
             m2 = re.search(r"(—\s+)([a-z_]+)\s*$", line)
-            if (
-                m2
-                and m2.group(2) in _TOOL_NAMES_RU
-                and line.lstrip()[:1] in ("⏳", "⚡", "⏩")
-            ):
+            if m2 and m2.group(2) in _TOOL_NAMES_RU:
                 line = line[: m2.start(2)] + _TOOL_NAMES_RU[m2.group(2)]
+            # служебная строка целиком: переводим все названия инструментов
+            # внутри неё, напр. "⚡ Прерываю … — итерация 21/60, terminal"
+            if line.lstrip()[:1] in ("⏳", "⚡", "⏩"):
+                for en, ru in _TOOL_NAMES_RU.items():
+                    line = re.sub(rf"\b{re.escape(en)}\b", ru, line)
             lines.append(line)
         return "\n".join(lines)
 
