@@ -200,19 +200,30 @@ class MAXClient:
 
     async def edit_message(
         self,
-        message_id: int,
+        message_id: Any,
         text: str,
         format: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """PUT /messages/{messageId} — edit a message."""
+        """PUT /messages?message_id=<mid> — edit a message.
+
+        Важно: MAX понимает именно query-форму. Вариант с id в пути
+        (`PUT /messages/{mid}`) отдаёт 404 method.not.found.
+        """
         payload: Dict[str, Any] = {"text": text}
         if format:
             payload["format"] = format
-        return await self._request("PUT", f"/messages/{message_id}", data=payload)
+        return await self._request(
+            "PUT", f"/messages?message_id={message_id}", data=payload
+        )
 
-    async def delete_message(self, message_id: int) -> Dict[str, Any]:
-        """DELETE /messages/{messageId} — delete a message."""
-        return await self._request("DELETE", f"/messages/{message_id}")
+    async def delete_message(self, message_id: Any) -> Dict[str, Any]:
+        """DELETE /messages?message_id=<mid> — delete a message.
+
+        Query-форма обязательна: путь с id уходит в 404.
+        """
+        return await self._request(
+            "DELETE", f"/messages?message_id={message_id}"
+        )
 
     async def get_message(self, message_id: int) -> Dict[str, Any]:
         """GET /messages/{messageId} — get a message."""

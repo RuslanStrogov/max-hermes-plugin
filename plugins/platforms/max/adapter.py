@@ -42,6 +42,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Set
@@ -91,6 +92,89 @@ COMMAND_RESPONSES = {
     "start": "👋 Привет! Я бот Hermes Agent на платформе MAX. Готов помогать!\n\nНажми на кнопку с командами у поля ввода или отправь /help.",
     # /help намеренно НЕ перехватываем — справку отдаёт сам Hermes
     # (полный список команд и скиллов).
+}
+
+# ── Русская локализация служебных статусов ─────────────────────────────────
+# MAX — русскоязычный мессенджер, поэтому этапы работы и технические детали
+# прогресса показываем по-русски. Замены узкие и однозначные, чтобы не
+# задевать обычный текст ответов агента.
+_STATUS_SUBS = (
+    (re.compile(r"⏳ Working — (\d+) min"), r"⏳ Работаю — \1 мин"),
+    (re.compile(r"⏩ Steered into current run"), "⏩ Сообщение добавлено в текущий запуск"),
+    (re.compile(r"⚡ Interrupting current task"), "⚡ Прерываю текущую задачу"),
+    (re.compile(r"\biteration (\d+)/(\d+)"), r"итерация \1/\2"),
+    (re.compile(r"\breceiving stream response\b"), "получаю ответ модели"),
+    (re.compile(r"\bwaiting for non-streaming API response\b"), "жду ответ API"),
+    (re.compile(r"\bwaiting for provider response \(streaming\)\b"), "жду ответ провайдера"),
+)
+
+_STATUS_PHRASES = {
+    "still on it": "всё ещё работаю",
+    "still working through it": "продолжаю работу",
+    "waiting for the result": "жду результат",
+    "on it": "делаю",
+    "one sec": "секунду",
+    "checking that now": "проверяю",
+}
+
+_TOOL_NAMES_RU = {
+    "terminal": "терминал",
+    "read_file": "чтение файла",
+    "write_file": "запись файла",
+    "patch": "правка файла",
+    "search_files": "поиск в файлах",
+    "web_search": "поиск в интернете",
+    "web_extract": "чтение страниц",
+    "browser_navigate": "браузер",
+    "vision_analyze": "анализ изображения",
+    "delegate_task": "подзадача",
+    "todo": "план",
+    "memory": "память",
+    "execute_code": "выполняю код",
+    "cronjob": "крон",
+    "image_generate": "генерация изображения",
+    "text_to_speech": "синтез речи",
+    "skill_view": "навык",
+    "skills_list": "список навыков",
+    "clarify": "уточняю",
+}
+
+# Русские описания команд в меню у поля ввода.
+# Реестр Hermes отдаёт английские формулировки; для MAX переводим.
+# Незнакомые команды (в т.ч. добавленные позже) остаются с исходным текстом.
+_MENU_DESC_RU = {
+    "help": "Справка по командам",
+    "new": "Начать новый диалог",
+    "stop": "Остановить фоновые процессы",
+    "status": "Состояние сессии, модель, контекст",
+    "resume": "Продолжить сохранённый диалог",
+    "sessions": "Список и продолжение диалогов",
+    "model": "Сменить модель",
+    "debug": "Отчёт для отладки (система и логи)",
+    "restart": "Перезапустить шлюз",
+    "update": "Обновить Hermes до новой версии",
+    "commands": "Все команды и навыки",
+    "approve": "Подтвердить опасную команду",
+    "deny": "Отклонить опасную команду",
+    "queue": "Поставить запрос в очередь",
+    "steer": "Вмешаться в текущий запуск",
+    "background": "Запустить запрос в фоне",
+    "reasoning": "Уровень рассуждений и показ",
+    "usage": "Расход токенов и лимиты",
+    "platform": "Пауза, запуск и список платформ",
+    "profile": "Текущий профиль и каталог",
+    "whoami": "Мои права на команды",
+    "start": "Приветствие",
+    "topic": "Темы в личных сообщениях",
+    "retry": "Повторить последнее сообщение",
+    "undo": "Откатить N шагов и переспросить",
+    "title": "Задать название диалога",
+    "branch": "Ветвление диалога",
+    "compress": "Сжать контекст беседы",
+    "rollback": "Точки восстановления файлов",
+    "agents": "Активные агенты и задачи",
+    "goal": "Постоянная цель для работы",
+    "moa": "Запрос через смесь моделей",
 }
 
 # Role instruction prepended to every user message
@@ -245,7 +329,11 @@ class MaxAdapter(BasePlatformAdapter):
             if not clean or clean in seen:
                 continue
             seen.add(clean)
-            out.append({"name": clean, "description": str(desc)[:128]})
+            desc_ru = _MENU_DESC_RU.get(clean)
+            out.append({
+                "name": clean,
+                "description": str(desc_ru or desc)[:128],
+            })
             if len(out) >= self.MAX_MENU_COMMANDS:
                 break
         return out
@@ -661,6 +749,9 @@ class MaxAdapter(BasePlatformAdapter):
         if len(content) > MAX_MESSAGE_LENGTH:
             content = content[: MAX_MESSAGE_LENGTH - 3] + "..."
 
+        # Служебные статусы и прогресс — по-русски
+        content = self._ru_status(content)
+
         payload: Dict[str, Any] = {"text": content}
 
         if has_markdown(content):
@@ -738,6 +829,86 @@ class MaxAdapter(BasePlatformAdapter):
         """Send typing indicator."""
         logger.info("send_typing to chat_id=%s", chat_id)
         await self.send_action(chat_id, "typing_on")
+
+    def _ru_status(self, text: str) -> str:
+        """Перевести служебные статусы и прогресс на русский.
+
+        Трогаем только узнаваемые служебные строки (пульс «Работаю», счётчик
+        итераций, названия инструментов, короткие фразы-статусы). Обычный
+        текст ответов агента не переписываем.
+        """
+        if not text:
+            return text
+        out = text
+        for pat, repl in _STATUS_SUBS:
+            out = pat.sub(repl, out)
+        stripped = out.strip()
+        if stripped in _STATUS_PHRASES:
+            return _STATUS_PHRASES[stripped]
+        lines = []
+        for line in out.split("\n"):
+            # строка вида "<emoji> <tool_name>"
+            m = re.fullmatch(r"([^\w\s]+\s+)([a-z_]+)", line.strip())
+            if m and m.group(2) in _TOOL_NAMES_RU:
+                lines.append(f"{m.group(1)}{_TOOL_NAMES_RU[m.group(2)]}")
+                continue
+            # хвост вида "⏳ Работаю — 3 мин — terminal" в служебной строке
+            m2 = re.search(r"(—\s+)([a-z_]+)\s*$", line)
+            if (
+                m2
+                and m2.group(2) in _TOOL_NAMES_RU
+                and line.lstrip()[:1] in ("⏳", "⚡", "⏩")
+            ):
+                line = line[: m2.start(2)] + _TOOL_NAMES_RU[m2.group(2)]
+            lines.append(line)
+        return "\n".join(lines)
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        **kwargs: Any,
+    ) -> SendResult:
+        """Обновить ранее отправленное сообщение (PUT /messages/{id}).
+
+        Нужно ядру: «пульс» прогресса и строки инструментов обновляются
+        на месте, а не присылаются новым сообщением на каждое изменение.
+        Без этого метода ядро падает в fallback и каждый апдейт становится
+        отдельным сообщением.
+        """
+        if not self._client or not content:
+            return SendResult(success=False, error="Not connected or empty")
+        text = self._ru_status(content)
+        fmt = "markdown" if has_markdown(text) else None
+        # mid в MAX — строка вида "mid.000000001da5fea2...", не число.
+        mid = str(message_id).strip()
+        if not mid:
+            return SendResult(success=False, error="Bad message_id")
+        try:
+            await self._client.edit_message(mid, text, format=fmt)
+            return SendResult(success=True, message_id=mid)
+        except Exception as e:
+            logger.debug("edit_message failed (%s): %s", mid, e)
+            return SendResult(success=False, error=str(e))
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Удалить сообщение (DELETE /messages?message_id=<mid>).
+
+        Используется ядром для уборки служебных «пузырей» прогресса
+        после успешного финального ответа.
+        """
+        if not self._client:
+            return False
+        mid = str(message_id).strip()
+        if not mid:
+            return False
+        try:
+            await self._client.delete_message(mid)
+            return True
+        except Exception as e:
+            logger.debug("delete_message failed (%s): %s", mid, e)
+            return False
 
     async def _send_inline_buttons(
         self,
