@@ -627,7 +627,13 @@ class MaxAdapter(BasePlatformAdapter):
             return
 
         user_name = sender.get("name", sender.get("first_name", "Unknown"))
-        text_with_role = f"{ROLE_INSTRUCTION}{text}" if text else ROLE_INSTRUCTION.rstrip("\n")
+        # Слэш-команды НЕ оборачиваем в роль: gateway определяет команду по
+        # первому символу "/". Префикс "[Системные инструкции]" ломал это —
+        # команды уходили агенту как обычный текст и не исполнялись.
+        if text.strip().startswith("/"):
+            text_with_role = text.strip()
+        else:
+            text_with_role = f"{ROLE_INSTRUCTION}{text}" if text else ROLE_INSTRUCTION.rstrip("\n")
         event = MessageEvent(
             message_id=body.get("mid", str(uuid.uuid4())),
             text=text_with_role,
@@ -841,7 +847,7 @@ class MaxAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("send_action(%s) failed for %s: %s", action, chat_id, e)
 
-    async def send_typing(self, chat_id: str):
+    async def send_typing(self, chat_id: str, **kwargs: Any):
         """Send typing indicator."""
         logger.info("send_typing to chat_id=%s", chat_id)
         await self.send_action(chat_id, "typing_on")
