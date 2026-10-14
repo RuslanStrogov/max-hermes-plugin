@@ -294,6 +294,13 @@ class MaxAdapter(BasePlatformAdapter):
         # она была отрисована (см. send_clarify / send_slash_confirm).
         self._clarify_state: Dict[str, str] = {}
         self._slash_confirm_state: Dict[str, str] = {}
+        # Отклик-«реакция»: один reply-пузырь с эмодзи на чат.
+        # MAX Bot API не умеет ставить реакции на сообщения, поэтому ближайшее
+        # возможное — короткий reply-пузырь, который живёт до финального ответа:
+        # 👍 принял -> ⏳ работаю -> ✅ готово. Старый пузырь убирается при
+        # получении следующего сообщения, поэтому в чате он всегда один.
+        self._ack_mids: Dict[str, str] = {}
+        self._ack_tasks: Set[asyncio.Task] = set()
         # Вебхук-сервер
         self._app: Any = None
         self._runner: Any = None
@@ -675,6 +682,15 @@ class MaxAdapter(BasePlatformAdapter):
                         self._session_tasks.pop(k, None)
                     except Exception:
                         pass
+        # Отклик-«реакция»: убираем прошлый пузырь и ставим «принял» на это
+        # сообщение. Слэш-команды не откликаем — они исполняются мгновенно.
+        try:
+            await self._clear_ack(str(typing_chat_id))
+            if text and not text.strip().startswith("/"):
+                await self._send_ack(str(typing_chat_id), body.get("mid"))
+        except Exception as e:
+            logger.debug("ack flow failed: %s", e)
+
         logger.info("DMP: dispatching msg chat=%s text=%s handler=%s", str(chat_id), text[:30], bool(getattr(self, '_message_handler', None)))
         # Прямой вызов _message_handler в обход session guard
         if hasattr(self, '_message_handler') and self._message_handler is not None:
@@ -829,6 +845,9 @@ class MaxAdapter(BasePlatformAdapter):
             if chat_id:
                 self._last_message_ids[chat_id] = mid
             logger.info("MAX send SUCCESS: mid=%s", mid)
+            # Финальный (не служебный) ответ — закрываем отклик «✅ готово».
+            if content and content.lstrip()[:1] not in ("⏳", "⚡", "⏩"):
+                await self._clear_ack(str(chat_id), done=True)
             return SendResult(
                 success=True,
                 message_id=mid,
@@ -860,6 +879,69 @@ class MaxAdapter(BasePlatformAdapter):
             await self._client.send_chat_action(chat_id=int(chat_id), action=action)
         except Exception as e:
             logger.debug("send_action(%s) failed for %s: %s", action, chat_id, e)
+
+    # Эмодзи отклика-«реакции» на сообщения пользователя.
+    ACK_ACCEPTED = "👍"
+    ACK_WORKING = "⏳"
+    ACK_DONE = "✅"
+    # Через сколько секунд 👍 превращается в ⏳ (работа затянулась).
+    ACK_WORKING_DELAY = 12.0
+
+    async def _send_ack(self, chat_id: str, reply_to: Optional[str] = None) -> None:
+        """Поставить отклик «принял» на сообщение пользователя.
+
+        MAX Bot API не умеет ставить реакции на сообщения, поэтому ближайшее
+        возможное — короткий reply-пузырь с эмодзи. Храним его mid, чтобы
+        потом поменять на «работаю» / «готово» или убрать.
+        """
+        if not self._client or not chat_id:
+            return
+        try:
+            cid = int(chat_id)
+        except (ValueError, TypeError):
+            return
+        query = f"user_id={cid}" if cid > 0 else f"chat_id={cid}"
+        payload: Dict[str, Any] = {"text": self.ACK_ACCEPTED}
+        if reply_to:
+            payload["reply_to"] = reply_to
+        try:
+            res = await self._client._request("POST", f"/messages?{query}", data=payload)
+            mid = ((res or {}).get("message") or {}).get("body", {}).get("mid", "")
+            if mid:
+                self._ack_mids[str(chat_id)] = mid
+                logger.info("Отклик отправлен в %s mid=%s", chat_id, mid)
+                # Если ответ не пришёл быстро — сменяем «принял» на «работаю».
+                task = asyncio.create_task(self._ack_upgrade_later(str(chat_id), mid))
+                self._ack_tasks.add(task)
+                task.add_done_callback(self._ack_tasks.discard)
+        except Exception as e:
+            logger.debug("ack send failed for %s: %s", chat_id, e)
+
+    async def _ack_upgrade_later(self, chat_id: str, mid: str) -> None:
+        """Долгая работа: 👍 -> ⏳ (если отклик всё ещё актуален)."""
+        try:
+            await asyncio.sleep(self.ACK_WORKING_DELAY)
+        except asyncio.CancelledError:
+            return
+        if self._ack_mids.get(str(chat_id)) != mid:
+            return
+        try:
+            await self._client.edit_message(mid, self.ACK_WORKING, format=None)
+        except Exception as e:
+            logger.debug("ack upgrade failed for %s: %s", chat_id, e)
+
+    async def _clear_ack(self, chat_id: str, *, done: bool = False) -> None:
+        """Убрать отклик-«реакцию» (или отметить его как «готово»)."""
+        mid = self._ack_mids.pop(str(chat_id), None)
+        if not mid or not self._client:
+            return
+        try:
+            if done:
+                await self._client.edit_message(mid, self.ACK_DONE, format=None)
+            else:
+                await self._client.delete_message(mid)
+        except Exception as e:
+            logger.debug("ack clear failed for %s: %s", chat_id, e)
 
     async def send_typing(self, chat_id: str, **kwargs: Any):
         """Send typing indicator."""
