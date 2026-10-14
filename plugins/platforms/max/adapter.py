@@ -87,18 +87,10 @@ DEFAULT_COMMANDS = [
 ]
 
 COMMAND_RESPONSES = {
-    "/start": "👋 Привет! Я бот Hermes Agent на платформе MAX. Готов помогать!",
-    "start": "👋 Привет! Я бот Hermes Agent на платформе MAX. Готов помогать!",
-    "/help": (
-        "📚 Команды бота:\n"
-        "/start — начать диалог\n"
-        "/help — эта справка"
-    ),
-    "help": (
-        "📚 Команды бота:\n"
-        "/start — начать диалог\n"
-        "/help — эта справка"
-    ),
+    "/start": "👋 Привет! Я бот Hermes Agent на платформе MAX. Готов помогать!\n\nНажми на кнопку с командами у поля ввода или отправь /help.",
+    "start": "👋 Привет! Я бот Hermes Agent на платформе MAX. Готов помогать!\n\nНажми на кнопку с командами у поля ввода или отправь /help.",
+    # /help намеренно НЕ перехватываем — справку отдаёт сам Hermes
+    # (полный список команд и скиллов).
 }
 
 # Role instruction prepended to every user message
@@ -173,6 +165,16 @@ class MaxAdapter(BasePlatformAdapter):
             config, "MAX_QUESTION_SEPARATOR", "question_separator", "."
         )
         self._allowed_users = _parse_allowed_users(config)
+        self._bot_username = _get_env_or_extra(
+            config, "MAX_BOT_USERNAME", "bot_username", "se13320221_1_bot"
+        ).lstrip("@").lower()
+        self._trigger_words = [
+            w.strip().lower()
+            for w in _get_env_or_extra(
+                config, "MAX_TRIGGER_WORDS", "trigger_words", ""
+            ).split(",")
+            if w.strip()
+        ]
         self._home_channel = _get_env_or_extra(
             config, "MAX_HOME_CHANNEL", "home_channel", ""
         )
@@ -187,6 +189,13 @@ class MaxAdapter(BasePlatformAdapter):
         self._polling_task: Optional[asyncio.Task] = None
         self._polling_stop = asyncio.Event()
         self._last_message_ids: Dict[str, str] = {}
+        # Индикатор «Печатает...» — периодическая задача на чат
+        self._typing_tasks: Dict[str, asyncio.Task] = {}
+        # Состояние интерактивных кнопок: clarify_id / confirm_id -> session_key.
+        # Нужно, чтобы нажатие кнопки резолвило именно тот prompt, из которого
+        # она была отрисована (см. send_clarify / send_slash_confirm).
+        self._clarify_state: Dict[str, str] = {}
+        self._slash_confirm_state: Dict[str, str] = {}
         # Вебхук-сервер
         self._app: Any = None
         self._runner: Any = None
@@ -206,6 +215,41 @@ class MaxAdapter(BasePlatformAdapter):
     def platform_name(self) -> str:
         return "max"
 
+    # MAX Bot API: не более 32 команд в меню, описание ≤128 символов.
+    MAX_MENU_COMMANDS = 32
+
+    def _build_menu_commands(self) -> List[Dict[str, str]]:
+        """Собрать меню команд бота из единого реестра Hermes.
+
+        Меню в MAX (кнопка списка команд у поля ввода) строится из
+        зарегистрированных команд. Берём их из того же реестра, что и
+        Telegram-меню, чтобы список не расходился с реальными командами.
+        При недоступности реестра откатываемся на DEFAULT_COMMANDS.
+        """
+        pairs: List[tuple] = []
+        try:
+            from hermes_cli.commands import telegram_menu_commands
+            pairs, _hidden = telegram_menu_commands(
+                max_commands=self.MAX_MENU_COMMANDS
+            )
+        except Exception as e:
+            logger.warning("Не удалось прочитать реестр команд Hermes: %s", e)
+
+        if not pairs:
+            return [dict(c) for c in DEFAULT_COMMANDS]
+
+        out: List[Dict[str, str]] = []
+        seen: Set[str] = set()
+        for name, desc in pairs:
+            clean = str(name).strip().lstrip("/")
+            if not clean or clean in seen:
+                continue
+            seen.add(clean)
+            out.append({"name": clean, "description": str(desc)[:128]})
+            if len(out) >= self.MAX_MENU_COMMANDS:
+                break
+        return out
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start webhook server and register webhook with MAX."""
         try:
@@ -219,12 +263,13 @@ class MaxAdapter(BasePlatformAdapter):
             if not bot_info:
                 logger.error("Failed to get bot info — check MAX_BOT_TOKEN")
                 return False
+            # Свой user_id — чтобы не отвечать на собственные сообщения
             self._bot_user_id = bot_info.get("user_id", 0)
             logger.info("Connected to MAX as: %s (user_id=%s)", bot_info.get("name", "unknown"), self._bot_user_id)
 
             # Register bot commands (menu button)
             try:
-                cmds = DEFAULT_COMMANDS.copy()
+                cmds = self._build_menu_commands()
                 await self._client.set_commands(cmds)
                 logger.info("Bot commands registered: %d commands", len(cmds))
             except Exception as e:
@@ -325,7 +370,7 @@ class MaxAdapter(BasePlatformAdapter):
         """Проверяет, нужно ли отвечать (упомянут бот, триггер-слова, allowed_users)."""
         if not text:
             return False
-        # Не отвечаем на свои же сообщения
+        # Не отвечаем на свои же сообщения (защита от эхо)
         bot_self_id = int(os.environ.get("MAX_BOT_SELF_ID", "0")) or \
             getattr(self, '_bot_user_id', 0)
         if bot_self_id and user_id == bot_self_id:
@@ -334,13 +379,23 @@ class MaxAdapter(BasePlatformAdapter):
         # В личных чатах (dialog) отвечаем всегда
         if chat_type in ("dialog",):
             return True
+        # Слэш-команды из меню бота должны работать и в группах: MAX
+        # присылает "/команда" без упоминания бота, поэтому обычная проверка
+        # на mention/триггер-слово их бы отсекла. Гейтинг самих команд —
+        # на стороне Hermes (у части команд свои права доступа).
+        if text.lstrip().startswith("/"):
+            return True
         # Всегда отвечаем разрешённым пользователям
         if self._allowed_users and user_id in self._allowed_users:
             return True
         # Отвечаем если упомянут бот (@username)
-        bot_username = os.environ.get("MAX_BOT_USERNAME", "").lower()
-        if bot_username and f"@{bot_username}" in text.lower():
+        low = text.lower()
+        if self._bot_username and f"@{self._bot_username}" in low:
             return True
+        # Отвечаем по триггер-словам (бот, ии, интеллект, робот...)
+        for w in self._trigger_words:
+            if w in low:
+                return True
         return False
 
     def _is_dedup(self, msg_id: str) -> bool:
@@ -398,6 +453,36 @@ class MaxAdapter(BasePlatformAdapter):
                 await asyncio.sleep(15)
 
 
+    def _start_typing(self, chat_id: str):
+        """Запускает периодическую отправку «Печатает...» для чата."""
+        self._stop_typing(chat_id)
+        try:
+            self._typing_tasks[chat_id] = asyncio.create_task(self._keep_typing(chat_id))
+        except RuntimeError:
+            pass
+
+    def _stop_typing(self, chat_id: str):
+        """Останавливает индикатор «Печатает...» для чата."""
+        task = self._typing_tasks.pop(chat_id, None)
+        if task:
+            try:
+                task.cancel()
+            except Exception:
+                pass
+
+    async def _keep_typing(self, chat_id: str):
+        """Отправляет индикатор каждые 4 секунды, пока не отменят."""
+        try:
+            while True:
+                if self._client:
+                    try:
+                        await self.send_typing(chat_id)
+                    except Exception as e:
+                        logger.debug("send_typing failed for %s: %s", chat_id, e)
+                await asyncio.sleep(4)
+        except asyncio.CancelledError:
+            pass
+
     async def _handle_message_created(self, data: Dict):
         """Process incoming text message from MAX."""
         logger.info("HMC: ENTERED _handle_message_created update_type=%s", data.get("update_type", "??"))
@@ -408,10 +493,15 @@ class MaxAdapter(BasePlatformAdapter):
 
         user_id = sender.get("user_id", 0)
         chat_id = recipient.get("chat_id", 0)
-# Определяем тип чата: "chat_type" или "type", по умолчанию dialog
+        # Определяем тип чата: "chat_type" или "type", по умолчанию dialog
         chat_type = (
             recipient.get("chat_type") or recipient.get("type") or "dialog"
         )
+        # Для индикатора «печатает...» нужен РЕАЛЬНЫЙ chat_id чата: действия
+        # (/chats/{id}/actions) адресуются по chat_id, а не по user_id.
+        # Для ответов в ЛС ниже chat_id подменяется на user_id, но для
+        # статусов сохраняем исходный идентификатор чата.
+        typing_chat_id = chat_id
         # В группах ID отрицательный — не заменяем на user_id
         if chat_type == "dialog" and chat_id >= 0:
             chat_id = user_id
@@ -464,10 +554,8 @@ class MaxAdapter(BasePlatformAdapter):
             ),
         )
 
-        # Отправляем индикатор «Печатает...» перед запуском агента
-        if self._client:
-            logger.info("SENDING typing to chat_id=%s", str(chat_id))
-            await self.send_typing(str(chat_id))
+        # Запускаем периодический индикатор «Печатает...» (по РЕАЛЬНОМУ chat_id)
+        self._start_typing(str(typing_chat_id))
 
         # Принудительно чистим зависшие relay-сессии перед диспатчем
         if hasattr(self, '_active_sessions'):
@@ -495,8 +583,10 @@ class MaxAdapter(BasePlatformAdapter):
                 await self.handle_message(event)
             except Exception as e:
                 logger.error("DMP: handle_message failed: %s", e, exc_info=True)
-        # Запоминаем chat_id для прямого пуллинга сообщений
-        self._last_message_ids[str(chat_id)] = body.get("mid", "")
+        # Запоминаем chat_id для прямого пуллинга сообщений (реальный chat_id чата)
+        self._last_message_ids[str(typing_chat_id)] = body.get("mid", "")
+        # Останавливаем индикатор «Печатает...»
+        self._stop_typing(str(typing_chat_id))
 
     async def _handle_message_callback(self, data: Dict):
         """Handle callback from inline keyboard button."""
@@ -512,6 +602,11 @@ class MaxAdapter(BasePlatformAdapter):
         button_text = callback.get("text", "")
 
         if self._allowed_users and user_id not in self._allowed_users:
+            return
+
+        # Нажатие кнопки clarify/подтверждения обрабатываем адресно, чтобы
+        # резолвить именно тот prompt, из которого отрисована клавиатура.
+        if callback_payload and await self._resolve_button_payload(callback_payload, str(chat_id)):
             return
 
         user_name = sender.get("name", sender.get("first_name", "Unknown"))
@@ -531,9 +626,8 @@ class MaxAdapter(BasePlatformAdapter):
                     ),
                 )
 
-        # Отправляем индикатор «Печатает...» перед запуском агента
-        if self._client:
-            await self.send_typing(str(chat_id))
+        # Запускаем периодический индикатор «Печатает...»
+        self._start_typing(str(chat_id))
 
         # Прямой вызов _message_handler в обход session guard
         if hasattr(self, '_message_handler') and self._message_handler is not None:
@@ -546,6 +640,8 @@ class MaxAdapter(BasePlatformAdapter):
                 await self.handle_message(event)
             except Exception as e:
                 logger.error("Callback handle_message failed: %s", e, exc_info=True)
+        # Останавливаем индикатор «Печатает...»
+        self._stop_typing(str(chat_id))
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get basic chat info."""
@@ -613,10 +709,258 @@ class MaxAdapter(BasePlatformAdapter):
         logger.error("MAX send FAILED: no result from API")
         return SendResult(success=False, error="Failed to send message")
 
+    # MAX принимает только эти статусы активности. typing_off / typing дают
+    # 400 proto.payload — их не отправляем.
+    SUPPORTED_ACTIONS = {
+        "typing_on",
+        "sending_photo",
+        "sending_video",
+        "sending_file",
+        "sending_audio",
+        "mark_seen",
+    }
+
+    async def send_action(self, chat_id: str, action: str) -> None:
+        """Показать статус активности в чате («печатает…», «отправляет фото…»).
+
+        Best-effort: любой сбой глотается, статус не должен ломать доставку.
+        Действие адресуется РЕАЛЬНЫМ chat_id чата (а не user_id) — иначе MAX
+        принимает запрос, но индикатор не показывает.
+        """
+        if not self._client or action not in self.SUPPORTED_ACTIONS:
+            return
+        try:
+            await self._client.send_chat_action(chat_id=int(chat_id), action=action)
+        except Exception as e:
+            logger.debug("send_action(%s) failed for %s: %s", action, chat_id, e)
+
     async def send_typing(self, chat_id: str):
         """Send typing indicator."""
         logger.info("send_typing to chat_id=%s", chat_id)
-        await self._client.send_chat_action(chat_id=int(chat_id), action="typing_on")
+        await self.send_action(chat_id, "typing_on")
+
+    async def _send_inline_buttons(
+        self,
+        chat_id: str,
+        text: str,
+        buttons: List[List[Dict[str, str]]],
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Отправить сообщение с инлайновой клавиатурой MAX.
+
+        MAX ждёт клавиатуру как attachment типа ``inline_keyboard``:
+        ``{"type": "inline_keyboard", "payload": {"buttons": [[...]]}}``.
+        Кнопка — ``{"type": "callback", "text": "...", "payload": "..."}``.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        payload: Dict[str, Any] = {
+            "text": text,
+            "attachments": [
+                {"type": "inline_keyboard", "payload": {"buttons": buttons}}
+            ],
+        }
+        if reply_to:
+            payload["reply_to"] = reply_to
+        try:
+            cid = int(chat_id)
+        except (ValueError, TypeError):
+            return SendResult(success=False, error="Bad chat_id")
+        query = f"user_id={cid}" if cid > 0 else f"chat_id={cid}"
+        try:
+            result = await self._client._request("POST", f"/messages?{query}", data=payload)
+            mid = ((result or {}).get("message") or {}).get("body", {}).get("mid", "")
+            logger.info("MAX inline buttons sent: mid=%s", mid)
+            return SendResult(success=True, message_id=mid)
+        except Exception as e:
+            logger.error("MAX inline buttons error: %s", e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Clarify-промпт с инлайновыми кнопками (по одной на вариант).
+
+        Gateway вызывает этот хук, когда агент задаёт вопрос через clarify с
+        вариантами. Без override'а базовый класс отдаёт нумерованный список
+        текстом — именно поэтому кнопки раньше не появлялись.
+
+        Нажатие кнопки приходит в ``_handle_message_callback`` с payload
+        ``cl:<clarify_id>:<idx>`` и резолвится через
+        ``tools.clarify_gateway.resolve_gateway_clarify``.
+        """
+        reply_to = (metadata or {}).get("reply_to")
+        text = f"❓ {question}"
+        if choices:
+            option_lines = "\n".join(
+                f"{i}. {c}" for i, c in enumerate(choices, start=1)
+            )
+            text += f"\n\n{option_lines}"
+
+        if not choices:
+            # Открытый вопрос: просто текст, следующий ответ перехватит gateway.
+            return await self.send(chat_id, text, reply_to=reply_to)
+
+        buttons: List[List[Dict[str, str]]] = []
+        for idx, choice in enumerate(choices):
+            label = str(choice)
+            if len(label) > 60:
+                label = label[:57] + "..."
+            buttons.append([{
+                "type": "callback",
+                "text": label,
+                "payload": f"cl:{clarify_id}:{idx}",
+            }])
+        buttons.append([{
+            "type": "callback",
+            "text": "✏️ Свой вариант",
+            "payload": f"cl:{clarify_id}:other",
+        }])
+
+        self._clarify_state[clarify_id] = session_key
+        return await self._send_inline_buttons(chat_id, text, buttons, reply_to)
+
+    async def send_slash_confirm(
+        self,
+        chat_id: str,
+        title: str,
+        message: str,
+        session_key: str,
+        confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Три кнопки подтверждения дорогой слэш-команды.
+
+        Нажатие приходит как payload ``sc:<once|always|cancel>:<confirm_id>``
+        и резолвится через ``tools.slash_confirm.resolve``.
+        """
+        reply_to = (metadata or {}).get("reply_to")
+        text = message if len(message) <= MAX_MESSAGE_LENGTH else message[: MAX_MESSAGE_LENGTH - 3] + "..."
+        buttons: List[List[Dict[str, str]]] = [
+            [
+                {"type": "callback", "text": "✅ Один раз", "payload": f"sc:once:{confirm_id}"},
+                {"type": "callback", "text": "🔒 Всегда", "payload": f"sc:always:{confirm_id}"},
+            ],
+            [
+                {"type": "callback", "text": "❌ Отмена", "payload": f"sc:cancel:{confirm_id}"},
+            ],
+        ]
+        self._slash_confirm_state[confirm_id] = session_key
+        return await self._send_inline_buttons(chat_id, text, buttons, reply_to)
+
+    async def _resolve_button_payload(self, payload: str, chat_id: str) -> bool:
+        """Обработать нажатие инлайновой кнопки, если это clarify/confirm.
+
+        Возвращает True, если payload распознан и обработан.
+        """
+        if payload.startswith("cl:"):
+            parts = payload.split(":", 2)
+            if len(parts) != 3:
+                return False
+            clarify_id, idx = parts[1], parts[2]
+            session_key = self._clarify_state.get(clarify_id)
+            if not session_key:
+                logger.info("clarify %s уже неактуален", clarify_id)
+                return True
+            try:
+                from tools import clarify_gateway as _cg
+                if idx == "other":
+                    _cg.mark_awaiting_text(clarify_id)
+                    await self.send(chat_id, "✏️ Напишите свой вариант ответа.")
+                    return True
+                try:
+                    num = int(idx)
+                except (ValueError, TypeError):
+                    return True
+                # Текст варианта берём из зарегистрированной записи clarify.
+                resolved_text: Optional[str] = None
+                try:
+                    from tools.clarify_gateway import _entries as _clarify_entries
+                    entry = _clarify_entries.get(clarify_id)
+                    if entry and entry.choices and 0 <= num < len(entry.choices):
+                        resolved_text = entry.choices[num]
+                except Exception:
+                    resolved_text = None
+                if resolved_text is None:
+                    resolved_text = f"choice {num + 1}"
+                self._clarify_state.pop(clarify_id, None)
+                _cg.resolve_gateway_clarify(clarify_id, resolved_text)
+                await self.send(chat_id, f"✅ Выбрано: {resolved_text}")
+            except Exception as e:
+                logger.error("clarify resolve failed: %s", e, exc_info=True)
+            return True
+
+        if payload.startswith("sc:"):
+            parts = payload.split(":", 2)
+            if len(parts) != 3:
+                return False
+            choice, confirm_id = parts[1], parts[2]
+            session_key = self._slash_confirm_state.pop(confirm_id, None)
+            if not session_key:
+                return True
+            labels = {"once": "✅ Подтверждено один раз",
+                      "always": "🔒 Всегда подтверждено",
+                      "cancel": "❌ Отменено"}
+            try:
+                from tools import slash_confirm as _sc
+                result_text = await _sc.resolve(session_key, confirm_id, choice)
+                await self.send(chat_id, labels.get(choice, "Готово"))
+                if result_text:
+                    await self.send(chat_id, result_text)
+            except Exception as e:
+                logger.error("slash-confirm resolve failed: %s", e, exc_info=True)
+            return True
+
+        return False
+
+    async def _send_attachment(
+        self,
+        chat_id: str,
+        att_type: str,
+        token: str,
+        caption: str = "",
+        reply_to: Optional[str] = None,
+        extra_payload: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a previously-uploaded attachment (image/file) to MAX."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        payload: Dict[str, Any] = {
+            "attachments": [
+                {"type": att_type, "payload": {"token": token, **(extra_payload or {})}}
+            ]
+        }
+        if caption:
+            text = caption
+            if len(text) > MAX_MESSAGE_LENGTH:
+                text = text[: MAX_MESSAGE_LENGTH - 3] + "..."
+            payload["text"] = text
+            if has_markdown(caption):
+                payload["format"] = "markdown"
+        if reply_to:
+            payload["reply_to"] = reply_to
+        # MAX API: личные сообщения адресуются по user_id, группы — по chat_id
+        try:
+            cid = int(chat_id)
+        except (ValueError, TypeError):
+            return SendResult(success=False, error="Bad chat_id")
+        query = f"user_id={cid}" if cid > 0 else f"chat_id={cid}"
+        try:
+            result = await self._client._request("POST", f"/messages?{query}", data=payload)
+            mid = ((result or {}).get("message") or {}).get("body", {}).get("mid", "")
+            if chat_id:
+                self._last_message_ids[chat_id] = mid
+            logger.info("MAX attachment sent: type=%s mid=%s", att_type, mid)
+            return SendResult(success=True, message_id=mid)
+        except Exception as e:
+            logger.error("MAX attachment send error: %s", e)
+            return SendResult(success=False, error=str(e))
 
     async def send_image(
         self,
@@ -626,28 +970,75 @@ class MaxAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
-        """Send an image to MAX."""
+        """Send a local image file to MAX as a native photo attachment."""
         try:
             if not self._client:
                 return SendResult(success=False, error="Not connected")
-            image_token = await self._client.upload_image(image_path)
+            # Статус «отправляет фото…», пока идёт загрузка
+            await self.send_action(chat_id, "sending_photo")
+            with open(image_path, "rb") as _f:
+                _data = _f.read()
+            _name = os.path.basename(image_path)
+            _lower = _name.lower()
+            if _lower.endswith(".png"):
+                _ctype = "image/png"
+            elif _lower.endswith(".webp"):
+                _ctype = "image/webp"
+            elif _lower.endswith(".gif"):
+                _ctype = "image/gif"
+            else:
+                _ctype = "image/jpeg"
+            image_token = await self._client.upload_image(_data, _name, _ctype)
             if not image_token:
                 return SendResult(success=False, error="Failed to upload image")
-            result = await self._client.send_message(
-                chat_id=int(chat_id),
-                text=caption or "",
-                attachments=[{
-                    "type": "image",
-                    "payload": {"token": image_token},
-                }],
-                reply_to=reply_to,
-            )
-            return SendResult(
-                success=True,
-                message_id=result.message_id,
-            )
+            return await self._send_attachment(chat_id, "image", image_token, caption, reply_to)
         except Exception as e:
             logger.error("send_image error: %s", e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Gateway hook for native image attachments (MEDIA: / cron delivery)."""
+        return await self.send_image(chat_id, image_path, caption or "", reply_to, metadata)
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local file to MAX as a native document attachment."""
+        try:
+            if not self._client:
+                return SendResult(success=False, error="Not connected")
+            # Статус «отправляет файл…», пока идёт загрузка
+            await self.send_action(chat_id, "sending_file")
+            with open(file_path, "rb") as _f:
+                _data = _f.read()
+            _name = os.path.basename(file_path)
+            _token = await self._client.upload_file(
+                _data, _name, "application/octet-stream"
+            )
+            if hasattr(_token, "token"):
+                _token = getattr(_token, "token", "") or _token
+            if not _token:
+                return SendResult(success=False, error="Failed to upload file")
+            return await self._send_attachment(
+                chat_id, "file", _token, caption or "", reply_to,
+                extra_payload={"name": _name},
+            )
+        except Exception as e:
+            logger.error("send_document error: %s", e)
             return SendResult(success=False, error=str(e))
 
     async def health_check(self) -> bool:

@@ -11,11 +11,7 @@ from typing import Any, Dict, List, Optional
 
 import aiohttp
 
-from max_shared.constants import (
-    DEFAULT_API_BASE_URL,
-    COMMANDS_API_BASE_URL,
-    DEFAULT_TIMEOUT_SECONDS,
-)
+from max_shared.constants import DEFAULT_API_BASE_URL, DEFAULT_TIMEOUT_SECONDS
 from max_shared.models import (
     SendMessageResponse,
     SubscriptionResponse,
@@ -126,32 +122,26 @@ class MAXClient:
         """GET /me — get bot info."""
         return await self._request("GET", "/me")
 
-    # ── Bot Commands (menu button) ───────────────────────────────────────────
-
     async def set_commands(
-        self,
-        commands: List[Dict[str, str]],
+        self, commands: List[Dict[str, str]]
     ) -> Dict[str, Any]:
-        """PATCH /me/commands — set bot commands shown in the input menu.
+        """PATCH /me/commands — зарегистрировать команды бота.
 
-        MAX shows these as a "/" button or "Открыть!" button next to the text input.
-        Commands are displayed as hints when user types "/".
-
-        Each command dict:
-            {"name": "command_name", "description": "Short description"}
-
-        Pass an empty list to remove all commands.
-
-        Uses platform-api2.max.ru as the base URL (separate from main API).
+        Зарегистрированные команды MAX показывает в меню у поля ввода
+        (кнопка вызова списка команд). Ограничения API: не более 32 команд,
+        описание — не более 128 символов. Превышение → 400 proto.payload,
+        поэтому обрезаем на нашей стороне.
         """
-        base_url = self._base_url
-        try:
-            self._base_url = COMMANDS_API_BASE_URL
-            result = await self._request("PATCH", "/me/commands", data={"commands": commands})
-            logger.info("Bot commands updated: %d commands registered", len(commands))
-            return result
-        finally:
-            self._base_url = base_url
+        cleaned: List[Dict[str, str]] = []
+        for c in commands[:32]:
+            name = str(c.get("name", "")).strip()
+            if not name:
+                continue
+            cleaned.append({
+                "name": name,
+                "description": str(c.get("description", ""))[:128],
+            })
+        return await self._request("PATCH", "/me/commands", {"commands": cleaned})
 
     # ── Messages ────────────────────────────────────────────────────────────
 
@@ -308,14 +298,44 @@ class MAXClient:
 
     # ── Upload ──────────────────────────────────────────────────────────────
 
-    async def upload_image(self, image_data: bytes) -> UploadResponse:
-        """POST /upload/image — upload an image."""
-        data = aiohttp.FormData()
-        data.add_field(
-            "file", image_data, filename="image.png", content_type="image/png"
-        )
-        body = await self._upload_request("/upload/image", data)
-        return UploadResponse(**body)
+    async def _upload_to_cdn(self, upload_type: str, file_data: bytes, filename: str, content_type: str) -> Dict[str, Any]:
+        """Two-step upload: get CDN url from POST /uploads, then POST the file to it."""
+        session = await self._get_session()
+        url = f"{self._base_url}/uploads"
+        async with session.post(
+            url,
+            headers={"Authorization": self._token},
+            params={"type": upload_type},
+        ) as resp:
+            body = await resp.json(content_type=None)
+            if resp.status >= 400:
+                raise MAXApiError(body.get("code", "unknown"), body.get("message", "Unknown error"), resp.status)
+            cdn_url = body.get("url")
+        if not cdn_url:
+            raise MAXApiError("upload", "No upload url returned", 500)
+
+        form = aiohttp.FormData()
+        form.add_field("file", file_data, filename=filename, content_type=content_type)
+        async with session.post(cdn_url, data=form) as resp2:
+            body2 = await resp2.json(content_type=None)
+            if resp2.status >= 400:
+                raise MAXApiError(str(resp2.status), str(body2)[:200], resp2.status)
+            return body2
+
+    async def upload_image(self, image_data: bytes, file_name: str = "image.jpg", content_type: str = "image/jpeg") -> str:
+        """Upload an image to MAX CDN and return its attachment token.
+
+        MAX has no POST /upload/image endpoint (it 502s). The flow is:
+        POST /uploads?type=image -> {url}, then POST the file to that url ->
+        {photos: {<id>: {token}}}.
+        """
+        logger.info("Uploading image: %s (%d bytes)", file_name, len(image_data))
+        body = await self._upload_to_cdn("image", image_data, file_name, content_type)
+        photos = body.get("photos") or {}
+        if not photos:
+            raise MAXApiError("upload", "Upload response has no photos: " + str(body)[:200], 500)
+        first = next(iter(photos.values()))
+        return first.get("token", "")
 
     async def upload_audio(
         self,
