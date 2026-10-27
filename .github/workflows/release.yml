@@ -5,6 +5,10 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   build-wheel:
     runs-on: ubuntu-latest

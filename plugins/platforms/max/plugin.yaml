@@ -1,7 +1,7 @@
 name: max-platform
 label: MAX
 kind: platform
-version: 2.1.1
+version: 2.1.2
 description: >
   MAX Bot API gateway adapter for Hermes Agent.
   Connects Hermes to the MAX messenger (max.ru) via Bot API webhooks.
