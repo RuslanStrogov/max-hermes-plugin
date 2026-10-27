@@ -104,6 +104,20 @@ hermes gateway restart
 hermes plugins install max-platform
 ```
 
+### 🐳 Docker-образ (готовый Hermes + плагин)
+
+```bash
+docker pull ghcr.io/ruslanstrogov/max-hermes-plugin:latest
+docker run -d --name max-hermes \
+  -p 8787:8787 \
+  -v ~/.hermes:/root/.hermes \
+  -e MAX_BOT_TOKEN=your_token \
+  -e MAX_WEBHOOK_URL=https://your-domain.com/webhook \
+  ghcr.io/ruslanstrogov/max-hermes-plugin:latest
+```
+
+Образ содержит Hermes Agent и плагин MAX, уже установленный в `~/.hermes/plugins/platforms/max`.
+
 ## ⚙️ Настройка
 
 ### 1. Создайте бота в MAX

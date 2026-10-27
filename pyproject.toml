@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "max-hermes-plugin"
+version = "2.1.1"
+description = "Native Hermes Agent plugin for the MAX Messenger Bot API"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Ruslan Strogov" }]
+keywords = ["hermes", "hermes-agent", "max", "max-messenger", "bot-api", "plugin"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "aiohttp>=3.9",
+  "pydantic>=2.0",
+  "pyyaml>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/RuslanStrogov/max-hermes-plugin"
+Documentation = "https://github.com/RuslanStrogov/max-hermes-plugin/tree/main/docs"
+Issues = "https://github.com/RuslanStrogov/max-hermes-plugin/issues"
+
+[tool.setuptools.packages.find]
+include = ["max_shared*", "plugins*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"plugins.platforms.max" = ["plugin.yaml"]
