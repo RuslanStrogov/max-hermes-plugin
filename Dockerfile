@@ -30,7 +30,4 @@ VOLUME ["/root/.hermes"]
 
 EXPOSE 8787
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD hermes gateway status >/dev/null 2>&1 || exit 1
-
 CMD ["hermes", "gateway", "run"]
