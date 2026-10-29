@@ -147,6 +147,34 @@ _STATUS_SUBS = (
      r"Автоприостановлено зависших сессий: \1"),
     (re.compile(r"Adjust reset timing in config\.yaml under session_reset\."),
      "Настрой время сброса в config.yaml, секция session_reset."),
+    # Дружелюбные англ. ярлыки инструментов из ядра (agent/display.py:_TOOL_VERBS):
+    # «💻 Running …», «🔎 Searching files for …», «✍️ Writing …» и т.п.
+    # Якорь ^(\s*[^\w\s]+\s+) — только строки-статусы с эмодзи в начале;
+    # обычный текст ответов не трогаем. Порядок важен: длинные фразы раньше
+    # коротких («Running code» до «Running», «Reading skill» до «Reading»).
+    (re.compile(r"^(\s*[^\w\s]+\s+)Running code\b", re.M), r"\1Выполняю код"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Searching the web for\b", re.M), r"\1Ищу в интернете:"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Searching files for\b", re.M), r"\1Ищу в файлах:"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Searching past sessions\b", re.M), r"\1Ищу в прошлых сессиях"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Generating image\b", re.M), r"\1Генерирую изображение"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Generating video\b", re.M), r"\1Генерирую видео"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Generating speech\b", re.M), r"\1Синтезирую речь"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Looking at the image\b", re.M), r"\1Смотрю изображение"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Reading skill\b", re.M), r"\1Читаю навык"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Updating skill\b", re.M), r"\1Обновляю навык"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Updating memory\b", re.M), r"\1Обновляю память"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Updating tasks\b", re.M), r"\1Обновляю задачи"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Listing skills\b", re.M), r"\1Список навыков"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Browsing\b", re.M), r"\1Открываю"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Clicking\b", re.M), r"\1Кликаю"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Typing\b", re.M), r"\1Печатаю"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Reading\b", re.M), r"\1Читаю"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Writing\b", re.M), r"\1Пишу"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Editing\b", re.M), r"\1Правлю"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Delegating\b", re.M), r"\1Делегирую"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Scheduling\b", re.M), r"\1Планирую"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Asking\b", re.M), r"\1Уточняю"),
+    (re.compile(r"^(\s*[^\w\s]+\s+)Running\b", re.M), r"\1Выполняю"),
 )
 
 _STATUS_PHRASES = {
@@ -748,7 +776,12 @@ class MaxAdapter(BasePlatformAdapter):
 
         user_id = sender.get("user_id", 0)
         chat_id = recipient.get("chat_id", 0)
-        chat_type = recipient.get("type", "dialog")
+        chat_type = recipient.get("chat_type") or recipient.get("type") or "dialog"
+        # Для ЛС MAX отдаёт chat_id диалога, а отправлять нужно по user_id —
+        # как в _handle_message_created. Без подмены ответ после нажатия кнопки
+        # уходит не туда и падает с dialog.not.found (HTTP 404).
+        if chat_type == "dialog" and chat_id >= 0:
+            chat_id = user_id
         callback_payload = callback.get("payload", "")
         button_text = callback.get("text", "")
 
@@ -798,6 +831,15 @@ class MaxAdapter(BasePlatformAdapter):
         """Get basic chat info."""
         return {"name": chat_id, "type": "max"}
 
+    def _split_message(self, text: str) -> List[str]:
+        """Разбить длинный текст на части ≤ MAX_MESSAGE_LENGTH.
+
+        Тонкая обёртка над _split_for_max: MAX режет текст на 4000 символов
+        (иначе 400 proto.payload), длинный ответ делим на несколько сообщений.
+        Возвращает минимум одну часть (даже для пустой строки).
+        """
+        return _split_for_max(text) or [text]
+
     async def send(
         self,
         chat_id: str,
@@ -809,41 +851,42 @@ class MaxAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
 
-        if len(content) > MAX_MESSAGE_LENGTH:
-            content = content[: MAX_MESSAGE_LENGTH - 3] + "..."
-
         # Служебные статусы и прогресс — по-русски
         content = self._ru_status(content)
 
-        payload: Dict[str, Any] = {"text": content}
+        # Лимит MAX — 4000 символов на сообщение: режем на части, а не теряем
+        # хвост (раньше ответ >4000 падал целиком трейсбеком).
+        parts = self._split_message(content)
 
-        if has_markdown(content):
-            payload["format"] = "markdown"
-
-        if reply_to:
-            payload["reply_to"] = reply_to
+        # Стикер вместо текста: metadata = {"sticker": "<code>"} или
+        # {"sticker": {"code": "..."}} / {"sticker": {"url": "..."}}.
+        _sticker = (metadata or {}).get("sticker")
+        if _sticker:
+            _code = _sticker if isinstance(_sticker, str) else _sticker.get("code")
+            _url = None if isinstance(_sticker, str) else _sticker.get("url")
+            return await self.send_sticker(chat_id, code=_code, url=_url, reply_to=reply_to)
 
         buttons = (metadata or {}).get("buttons")
-        if buttons:
-            payload["attachments"] = [
-                MessageConverter.build_inline_keyboard(buttons)
-            ]
-        else:
+        cmd_buttons: List[str] = []
+        if not buttons:
             # Кнопки-команды: строки вида "/status" в ответе превращаем в
             # кликабельные кнопки типа message — нажатие отправляет команду
             # как сообщение пользователя. Так нужную команду достаточно нажать.
-            content, cmd_buttons = self._extract_command_buttons(content)
-            if cmd_buttons and not content.strip():
+            parts[0], cmd_buttons = self._extract_command_buttons(parts[0])
+            if cmd_buttons and not parts[0].strip():
                 # Ответ состоял только из команд — оставляем подпись.
-                content = "Нажми, чтобы выполнить:"
-            payload["text"] = content
-            if cmd_buttons:
-                payload["attachments"] = [{
-                    "type": "inline_keyboard",
-                    "payload": {"buttons": [
-                        [{"type": "message", "text": cmd}] for cmd in cmd_buttons
-                    ]},
-                }]
+                parts[0] = "Нажми, чтобы выполнить:"
+
+        attachments: Optional[List[Dict[str, Any]]] = None
+        if buttons:
+            attachments = [MessageConverter.build_inline_keyboard(buttons)]
+        elif cmd_buttons:
+            attachments = [{
+                "type": "inline_keyboard",
+                "payload": {"buttons": [
+                    [{"type": "message", "text": cmd}] for cmd in cmd_buttons
+                ]},
+            }]
 
         user_id = (metadata or {}).get("user_id")
         params: Dict[str, Any] = {}
@@ -865,22 +908,34 @@ class MaxAdapter(BasePlatformAdapter):
         query = "&".join(f"{k}={v}" for k, v in params.items())
         path = f"/messages?{query}" if query else "/messages"
 
-        logger.info("MAX send: %s text_len=%d", path, len(content))
-        result = await self._client._request("POST", path, data=payload)
-        if result:
-            mid = result.get("message", {}).get("body", {}).get("mid", "")
-            if chat_id:
-                self._last_message_ids[chat_id] = mid
-            logger.info("MAX send SUCCESS: mid=%s", mid)
-            # Финальный (не служебный) ответ — закрываем отклик «✅ готово».
-            if content and content.lstrip()[:1] not in ("⏳", "⚡", "⏩"):
-                await self._clear_ack(str(chat_id), done=True)
-            return SendResult(
-                success=True,
-                message_id=mid,
-            )
-        logger.error("MAX send FAILED: no result from API")
-        return SendResult(success=False, error="Failed to send message")
+        last_mid = ""
+        for idx, part in enumerate(parts):
+            payload: Dict[str, Any] = {"text": part}
+            if has_markdown(part):
+                payload["format"] = "markdown"
+            if reply_to and idx == 0:
+                payload["reply_to"] = reply_to
+            if attachments and idx == 0:
+                payload["attachments"] = attachments
+            logger.info("MAX send: %s text_len=%d (часть %d/%d)",
+                        path, len(part), idx + 1, len(parts))
+            result = await self._client._request("POST", path, data=payload)
+            if not result:
+                logger.error("MAX send FAILED: no result from API")
+                if idx == 0:
+                    return SendResult(success=False, error="Failed to send message")
+                break
+            last_mid = result.get("message", {}).get("body", {}).get("mid", "")
+            if chat_id and last_mid:
+                self._last_message_ids[chat_id] = last_mid
+            logger.info("MAX send SUCCESS: mid=%s", last_mid)
+
+        if not last_mid:
+            return SendResult(success=False, error="Failed to send message")
+        # Финальный (не служебный) ответ — закрываем отклик «✅ готово».
+        if content and content.lstrip()[:1] not in ("⏳", "⚡", "⏩"):
+            await self._clear_ack(str(chat_id), done=True)
+        return SendResult(success=True, message_id=last_mid)
 
     # MAX принимает только эти статусы активности. typing_off / typing дают
     # 400 proto.payload — их не отправляем.
@@ -1319,6 +1374,56 @@ class MaxAdapter(BasePlatformAdapter):
             logger.error("MAX attachment send error: %s", e)
             return SendResult(success=False, error=str(e))
 
+    async def send_sticker(
+        self,
+        chat_id: str,
+        code: Optional[str] = None,
+        url: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a native MAX sticker as the sole attachment of a message.
+
+        MAX API: POST /messages with
+        attachments=[{"type":"sticker","payload":{"code":"<code>"}}]
+        (or {"url": "..."}). Only one sticker per message; cannot be combined
+        with other attachments. Get the code from an incoming sticker (webhook
+        attachment payload.code) — the API has no sticker catalog.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        if not code and not url:
+            return SendResult(success=False, error="sticker code or url required")
+
+        payload: Dict[str, Any] = {
+            "attachments": [{"type": "sticker", "payload": {}}]
+        }
+        if code:
+            payload["attachments"][0]["payload"]["code"] = str(code)
+        if url:
+            payload["attachments"][0]["payload"]["url"] = str(url)
+        if reply_to:
+            payload["reply_to"] = reply_to
+
+        # Адресация как в _send_attachment: положительный id → user_id, иначе chat_id.
+        try:
+            cid = int(chat_id)
+        except (ValueError, TypeError):
+            return SendResult(success=False, error="Bad chat_id")
+        query = f"user_id={cid}" if cid > 0 else f"chat_id={cid}"
+        try:
+            result = await self._client._request("POST", f"/messages?{query}", data=payload)
+            mid = ((result or {}).get("message") or {}).get("body", {}).get("mid", "")
+            if chat_id and mid:
+                self._last_message_ids[chat_id] = mid
+            logger.info("MAX sticker sent: code=%s url=%s mid=%s", code, url, mid)
+            if not mid:
+                return SendResult(success=False, error="Failed to send sticker")
+            return SendResult(success=True, message_id=mid)
+        except Exception as e:
+            logger.error("MAX sticker send error: %s", e)
+            return SendResult(success=False, error=str(e))
+
     async def send_image(
         self,
         chat_id: str,
@@ -1412,6 +1517,153 @@ class MaxAdapter(BasePlatformAdapter):
         pass
 
 
+def _split_for_max(text: str, limit: int = MAX_MESSAGE_LENGTH) -> List[str]:
+    """Split text into MAX-sized chunks, preferring newline boundaries.
+
+    MAX rejects any ``text`` field longer than 4000 chars with HTTP 400, so an
+    out-of-process sender must chunk instead of letting the API drop the message.
+    """
+    text = text or ""
+    if len(text) <= limit:
+        return [text] if text else []
+    parts: List[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        window = remaining[:limit]
+        cut = window.rfind("\n\n")
+        if cut < limit // 2:
+            cut = window.rfind("\n")
+        if cut < limit // 2:
+            cut = window.rfind(" ")
+        if cut < limit // 2:
+            cut = limit
+        parts.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip("\n")
+    if remaining:
+        parts.append(remaining)
+    return parts
+
+
+def _parse_media_entry(entry: Any) -> Optional[Dict[str, Any]]:
+    """Normalise a media_files item into ``{'path': str, 'caption': str|None}``."""
+    if isinstance(entry, str) and entry.strip():
+        return {"path": entry, "caption": None}
+    if isinstance(entry, dict):
+        path = entry.get("path") or entry.get("file") or entry.get("file_path")
+        if path:
+            return {"path": str(path), "caption": entry.get("caption")}
+    return None
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+):
+    """Out-of-process MAX delivery.
+
+    Opens an ephemeral MAX client, sends the text (auto-split to MAX's 4000-char
+    limit) plus any media, then closes the session. Implements the
+    ``standalone_sender_fn`` contract so ``deliver=max:<chat>`` cron jobs work
+    even when the cron process is not the gateway process.
+    """
+    extra = getattr(pconfig, "extra", None) or {}
+    token = (
+        getattr(pconfig, "token", None)
+        or extra.get("token")
+        or os.getenv("MAX_BOT_TOKEN", "")
+    )
+    token = str(token).strip()
+    if not token:
+        return {"error": "MAX bot token is not set (MAX_BOT_TOKEN) — cannot deliver to MAX"}
+
+    base_url = (
+        extra.get("api_base_url")
+        or os.getenv("MAX_API_BASE_URL", DEFAULT_API_BASE_URL)
+    )
+
+    # MAX addressing: positive numeric ids are DMs (user_id), negative are chats.
+    target: Dict[str, Any] = {}
+    raw_chat = str(chat_id).strip()
+    try:
+        cid = int(raw_chat)
+    except (TypeError, ValueError):
+        cid = None
+    if cid is not None and cid > 0:
+        target["user_id"] = cid
+    elif cid is not None:
+        target["chat_id"] = cid
+    else:
+        target["chat_id"] = raw_chat
+
+    client = MAXClient(token=token, base_url=str(base_url))
+    last_mid = ""
+    try:
+        parts = _split_for_max(message or "")
+        for idx, part in enumerate(parts):
+            body = part
+            if len(parts) > 1:
+                body = f"({idx + 1}/{len(parts)})\n{part}"
+            kwargs: Dict[str, Any] = {"text": body}
+            if has_markdown(body):
+                kwargs["format"] = "markdown"
+            resp = await client.send_message(**kwargs, **target)
+            if getattr(resp, "message_id", None):
+                last_mid = resp.message_id
+
+        for entry in (media_files or []):
+            item = _parse_media_entry(entry)
+            if not item:
+                continue
+            path = item["path"]
+            caption = item.get("caption") or ""
+            try:
+                with open(path, "rb") as fh:
+                    data = fh.read()
+                name = os.path.basename(path)
+                lower = name.lower()
+                is_image = lower.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")) and not force_document
+                if is_image:
+                    if lower.endswith(".png"):
+                        ctype = "image/png"
+                    elif lower.endswith(".webp"):
+                        ctype = "image/webp"
+                    elif lower.endswith(".gif"):
+                        ctype = "image/gif"
+                    else:
+                        ctype = "image/jpeg"
+                    image_token = await client.upload_image(data, name, ctype)
+                    resp = await client.send_image_message(
+                        image_token=image_token, text=caption, **target
+                    )
+                else:
+                    uploaded = await client.upload_file(data, name, "application/octet-stream")
+                    file_token = getattr(uploaded, "attachment_id", None) or getattr(uploaded, "token", None) or ""
+                    resp = await client.send_file_message(
+                        file_token=str(file_token), file_name=name, text=caption, **target
+                    )
+                if getattr(resp, "message_id", None):
+                    last_mid = resp.message_id
+            except Exception as e:  # media is best-effort, text already delivered
+                logger.warning("MAX standalone: media upload failed for %s: %s", path, e)
+
+        if not last_mid and not parts:
+            return {"error": "Nothing to send — empty message and no media"}
+        return {"success": True, "message_id": last_mid}
+    except Exception as e:
+        logger.error("MAX standalone send failed: %s", e)
+        return {"error": f"MAX standalone send failed: {e}"}
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            pass
+
+
 def register(ctx):
     """Register the MAX platform adapter with Hermes gateway."""
     def _check():
@@ -1429,5 +1681,8 @@ def register(ctx):
         check_fn=_check,
         emoji="💬",
         setup_fn=None,
+        cron_deliver_env_var="MAX_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send,
+        max_message_length=MAX_MESSAGE_LENGTH,
     )
     logger.info("MAX platform adapter registered")

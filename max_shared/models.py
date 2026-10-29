@@ -68,9 +68,10 @@ class MAXRecipient(BaseModel):
 
 
 class MAXAttachmentPayload(BaseModel):
-    """Attachment payload — contains URL and access token."""
+    """Attachment payload — URL/token for media, code for stickers."""
     url: Optional[str] = None
     token: Optional[str] = None
+    code: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="allow")
@@ -105,6 +106,10 @@ class MAXAttachment(BaseModel):
     @property
     def is_audio(self) -> bool:
         return self.type in ("audio", "voice")
+
+    @property
+    def is_sticker(self) -> bool:
+        return self.type == "sticker"
 
 
 class MAXMessageBody(BaseModel):

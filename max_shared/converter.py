@@ -86,6 +86,7 @@ class MessageConverter:
                     "type": att.type,
                     "url": att.payload.url,
                     "token": att.payload.token,
+                    "code": att.payload.code,
                     "metadata": att.payload.metadata,
                 })
 
@@ -377,6 +378,12 @@ class MessageConverter:
                 label = f"📎 [Файл: {name}]"
             elif att_type == "contact":
                 label = "[Контакт]"
+            elif att_type == "sticker":
+                code = att.get("code") or ""
+                label = "🎨 [Стикер"
+                if code:
+                    label += f", код: {code}"
+                label += "]"
             elif att_type == "inline_keyboard":
                 continue
             else:

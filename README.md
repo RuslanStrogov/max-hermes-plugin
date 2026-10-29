@@ -249,6 +249,13 @@ buttons = [
 | 1 | **`attachments` → `Optional`** — Pydantic больше не падает, если MAX присылает `null` | `max_shared/models.py` |
 | 2 | **ROLE_INSTRUCTION смягчён** — убран запрет инструментов и "1-3 предложения". Агент может отвечать как полноценный Hermes | `adapter.py` |
 | 3 | **Bot Commands Menu** — регистрация `/start`, `/help`, `/about` через `PATCH /me/commands` + прямая обработка без Hermes | `adapter.py` |
+| 4 | **Длинные ответы не теряются** — текст >4000 символов делится на несколько сообщений (по абзацам/строкам/пробелам) вместо обрезки `...` | `adapter.py` |
+| 5 | **Стикеры** — `send_sticker` + поддержка `metadata={"sticker": ...}`, входящие стикеры видны агенту (код стикера) | `adapter.py`, `max_shared/` |
+| 6 | **Ответ на кнопку в ЛС** — `callback` теперь адресуется по `user_id` (было `dialog.not.found`, HTTP 404) | `adapter.py` |
+| 7 | **Cron-доставка без живого гейтвея** — `standalone_sender_fn` + `cron_deliver_env_var` (`MAX_HOME_CHANNEL`), медиа и чанкинг в отдельном процессе | `adapter.py` |
+| 8 | **Сессия aiohttp на каждый event loop** — кроны больше не падают с `Timeout context manager should be used inside a task` | `max_shared/max_client.py` |
+| 9 | **Лимит MAX 4000 символов** — `MAX_MESSAGE_LENGTH` исправлен с 4096 на 4000 | `max_shared/constants.py` |
+| 10 | **Русификация статусов инструментов** — «💻 Running…», «🔎 Searching files for…» и др. показываются по-русски | `adapter.py` |
 
 ## 📄 Лицензия
 
