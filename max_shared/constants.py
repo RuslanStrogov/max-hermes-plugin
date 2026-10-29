@@ -1,7 +1,7 @@
 """Shared constants for MAX Bot API clients."""
 
 DEFAULT_API_BASE_URL = "https://platform-api.max.ru"
-MAX_MESSAGE_LENGTH = 4096
+MAX_MESSAGE_LENGTH = 4000  # MAX Bot API: 'text' max 4000
 DEDUP_WINDOW_SECONDS = 300
 DEDUP_MAX_SIZE = 1000
 DEFAULT_TIMEOUT_SECONDS = 30

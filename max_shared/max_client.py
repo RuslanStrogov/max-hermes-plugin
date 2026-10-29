@@ -6,6 +6,7 @@ from max-hermes-plugin (file upload, download).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -54,24 +55,70 @@ class MAXClient:
         self._base_url = base_url.rstrip("/")
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: Optional[aiohttp.ClientSession] = None
+        # One session per event loop. A ClientSession (and its connector) is
+        # bound to the loop that created it; reusing it from another loop (e.g.
+        # the cron scheduler's standalone ``asyncio.run`` fallback, which runs in
+        # a worker thread with its own loop) makes aiohttp raise
+        # ``RuntimeError: Timeout context manager should be used inside a task``.
+        self._sessions: Dict[Any, aiohttp.ClientSession] = {}
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create aiohttp session."""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
+        """Get or create an aiohttp session bound to the CURRENT running loop.
+
+        aiohttp binds a ClientSession (and its TCP connector) to the event loop
+        that created it.  Reusing one session from a different loop makes aiohttp
+        raise ``RuntimeError: Timeout context manager should be used inside a
+        task`` — which is exactly what happens on cron delivery: the scheduler's
+        standalone fallback runs ``asyncio.run(...)`` in a worker thread (a fresh
+        loop) and then calls the live gateway adapter's ``send()``, whose cached
+        session belongs to the gateway loop.  Fix: keep one session per loop.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        # Prune sessions whose loop is already closed (transient cron loops),
+        # so they don't accumulate. Their connector is released here.
+        for dead_loop in [lp for lp in list(self._sessions) if lp is not None and lp.is_closed()]:
+            dead = self._sessions.pop(dead_loop, None)
+            if dead is not None and not dead.closed:
+                try:
+                    _conn = getattr(dead, "_connector", None)
+                    if _conn is not None:
+                        _res = _conn.close()
+                        if asyncio.iscoroutine(_res):
+                            _res.close()
+                except Exception:
+                    pass
+
+        sess = self._sessions.get(loop)
+        if sess is None or sess.closed:
+            sess = aiohttp.ClientSession(
                 headers={
                     "Authorization": self._token,
                     "Content-Type": "application/json",
                 },
                 timeout=self._timeout,
             )
-        return self._session
+            self._sessions[loop] = sess
+            self._session = sess  # backward-compat: most recently created
+        return sess
 
     async def close(self) -> None:
-        """Close HTTP session."""
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        """Close every HTTP session (one per event loop)."""
+        sessions = list(self._sessions.values())
+        if self._session is not None and self._session not in sessions:
+            sessions.append(self._session)
+        self._sessions.clear()
+        self._session = None
+        for sess in sessions:
+            if sess is None or sess.closed:
+                continue
+            try:
+                await sess.close()
+            except Exception:
+                pass
 
     async def _request(
         self,
